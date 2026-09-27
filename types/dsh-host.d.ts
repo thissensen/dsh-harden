@@ -46,3 +46,69 @@ declare module '@deepseek-ai/schemastery' {
     const z: SchemasteryNamespace
     export default z
 }
+
+declare module '@deepseek-ai/dsh-tools' {
+    /** 工具被中止时平台用的错误码（值就是字符串 'ABORTED'）。 */
+    export const TOOL_ABORTED: string
+    export const TOOL_ABORTED_BEFORE_DISPATCH: string
+
+    /**
+     * `defineTool` 的入参。
+     *
+     * 形状刻意宽松：本文件只为「CI 上没有宿主包」时兜底，让 `execute` / `render`
+     * 这类回调从上下文拿到显式类型（否则 TS 报隐式 any）。真正的契约在平台源码里。
+     */
+    export interface DefineToolOptions {
+        name: string
+        description: string
+        parameters: Record<string, unknown>
+        output?: {
+            schema?: Record<string, unknown>
+            render?: (args: any, value: any) => unknown
+            presentationMeta?: (args: any, value: any) => unknown
+        }
+        execute(args: any, exec: any): unknown
+        isConcurrencySafe?(args: any): boolean
+        [key: string]: unknown
+    }
+
+    export function defineTool(options: DefineToolOptions): any
+}
+
+declare module '@deepseek-ai/dsh-llm' {
+    /** 平台统一的请求失败错误（`code` 携带失败分类）。 */
+    export class HarnessError extends Error {
+        constructor(message: string, code?: string, options?: { cause?: unknown })
+        readonly code?: string
+    }
+}
+
+declare module '@deepseek-ai/dsh-sandbox' {
+    /** 可申请提权的沙箱档位。 */
+    export const ESCALATION_TARGETS: readonly string[]
+
+    /** 审批请求通道的结构形状（工具层闭包后传下来）。 */
+    export interface EscalationApprover {
+        request(req: unknown): Promise<string>
+    }
+
+    /**
+     * `approveEscalation` 需要的审批配料。
+     *
+     * `approver` **必须含 `undefined`**——它表示「没有组合审批服务」，调用方也按含
+     * undefined 收；声明成必填会让取值处凭空多出一层 undefined 而对不上。
+     */
+    export interface EscalationApproval {
+        approver: EscalationApprover | undefined
+        [key: string]: unknown
+    }
+
+    export function approveEscalation(request: unknown, approval: EscalationApproval): Promise<string>
+    export function escalationHintMarker(subject: string): string
+    export function sandboxDenialMarker(mode: string): string
+    export function sandboxPermissionsDescription(subject: string): string
+    export function validateEscalationArgs(
+        sandboxPermissions: string | undefined,
+        justification: string | undefined,
+    ): void
+}
