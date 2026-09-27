@@ -1,0 +1,29 @@
+# dsh-harden 的 bundle patch：把 host 半边作为一个 row 插进 composition。
+#
+# 生效路径：package.json 的 `dsh.bundle.patch` 指向本文件；`dsh plugin add` 只会把
+# 带了这个字段的包追加进 profile 的 `dsh.profile.bundles`，没有它就被当成普通依赖
+# 并告警（判据来自 dsh-config-manager 的 patch 注释，已在其已发布产物里核实）。
+#
+# row 的 id 必须与 host 插件（lib/index.js）导出的 `name` 一致，否则 patch
+# 定位不到对应的 row。
+#
+# 本地开发安装（把 <克隆目录> 换成这份源码所在的目录）：
+#   dsh plugin --profile desktop add link:<克隆目录>/dsh-harden
+#
+# ── 关掉平台 open-in-app 的 host 半边 ─────────────────────────────────────
+#
+# 原实现最终调用 @deepseek-ai/dsh-native-command 的 runNativeCommand，那里把
+# windowsHide 写死成 true，explorer 窗口创建了却不可见（2026-09-28 实测 A/B）。
+# 本插件自己 spawn explorer（windowsHide: false），并注册同名路由接管。
+#
+# webServer 的 (kind, path) 组合唯一：不先 disable 这一行，两个插件同时注册
+# /open-in-app/* 会直接抛错，让两边一起挂掉。
+#
+# 只关 host 半边（id: open-in-app）；client 半边（id: ui-open-in-app）保留——
+# 它只是向这几个路由发请求的按钮，我们提供了同样的接口。
+- id: open-in-app
+  disabled: true
+
+- insert:
+    - id: harden
+      name: 'dsh-harden'

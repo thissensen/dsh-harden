@@ -1,0 +1,12 @@
+# 单包项目（没有 workspace 成员），这份文件在这里只有一个用途：放 pnpm 12 的配置。
+#
+# peerDependencies 里的宿主包（@deepseek-ai/*）由 scripts/link-deps.mjs 手工链接进
+# node_modules，不走 registry（那些包只随 DSH 安装，npm 上没有）。`autoInstallPeers`
+# 保持 false，避免 pnpm 去 registry 解析它们而整个安装失败。
+autoInstallPeers: false
+
+# pnpm 12 默认拦截依赖的构建脚本（供应链安全）；仓库里唯一需要构建的是 esbuild
+# （vite/vitest 的打包器）。不写这段，CI 上 `pnpm install` 会以 ERR_PNPM_IGNORED_BUILDS
+# 直接失败。
+allowBuilds:
+  esbuild: true

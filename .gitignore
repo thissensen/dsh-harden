@@ -1,0 +1,16 @@
+node_modules/
+*.log
+*.tmp
+
+# 构建产物（npm 发布时按 package.json 的 files 字段现构建）
+# 前导斜杠锚定到仓库根：否则 client/ 会连 src/client/ 源码目录一起忽略。
+/lib/
+/client/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store
