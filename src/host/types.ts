@@ -14,6 +14,15 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 // ── 配置领域模型（settings 命名空间 harden 的形态）───────────────────────────
 
 /**
+ * 「上下文自动压缩」的作用范围。
+ *
+ * - `all`：主代理与子代理都压（默认）。
+ * - `main`：只压主代理，子代理保持原样。
+ * - `subagent`：只压子代理，主代理保持原样。
+ */
+export type CompactionScope = 'all' | 'main' | 'subagent'
+
+/**
  * 插件配置。字段全部可选——真实值由平台 settings 服务持有，
  * 插件只在 `apply` 时读一次 schema 快照，运行时按引用现取现解包。
  */
@@ -30,26 +39,19 @@ export interface HardenConfig {
     networkRetryTokens?: string
     /** 工具 `job_background`（把命令放后台 job 执行）的开关。默认 true。 */
     backgroundJobTool?: boolean
+    /** 规则「上下文自动压缩」的开关。默认 true。 */
+    contextCompaction?: boolean
+    /** 规则「上下文自动压缩」：总开关打开时，压缩作用在哪些会话上。默认 `all`。 */
+    compactionScope?: CompactionScope
+    /** 触发自动压缩的上下文 token 阈值（字符串，如 `200K`）。 */
+    compactionThreshold?: string
+    /** 交给摘要模型的压缩指令；用户可改。 */
+    compactionInstruction?: string
 }
 
 /** settings 服务里本插件用到的部分。 */
 export interface SettingsService {
     update(namespace: string, patch: object): void
-}
-
-/** 平台插件管理服务：本项目只用来在「打开文件夹」接管开/关之间成对切换两条 row。 */
-export interface PluginManagerService {
-    listPlugins(): Promise<PluginRowLike[]>
-    setPluginEnabled(entryId: string, enabled: boolean): Promise<unknown>
-}
-
-/** listPlugins() 返回的一行（只声明本项目读到的字段）。 */
-export interface PluginRowLike {
-    entryId: string
-    moduleName: string
-    enabled: boolean
-    patchId?: string
-    readOnlyReason?: string
 }
 
 /** cordis 上下文里本插件用到的部分。 */
@@ -62,13 +64,52 @@ export interface Ctx {
     effect?(callback: () => void | (() => void)): void
     readonly settings?: SettingsService
     readonly webServer?: WebServerService
-    readonly pluginManager?: PluginManagerService
+    /** 平台 token 计量服务（压缩判定阈值用）。 */
+    readonly tokenMeter?: TokenMeterService
+    /** 平台 LLM 服务（压缩的摘要调用用）。 */
+    readonly llm?: LlmService
 }
 
 export interface Logger {
     info?(message: string, ...args: unknown[]): void
     warn?(message: string, ...args: unknown[]): void
     error?(message: string, ...args: unknown[]): void
+}
+
+// ── 平台服务面（压缩模块用，只声明本项目读到的成员）──────────────────────
+
+/** 一条 priced 会话表面节点（`ctx.tokenMeter.measure()` 返回的 `nodes` 元素）。 */
+export interface TokenSurfaceNodeLike {
+    readonly seq: number
+    readonly tokens: number
+    readonly heuristicTokens: number
+}
+
+/** `ctx.tokenMeter.measure()` 的返回值里本项目用到的字段。 */
+export interface TokenMeasurementLike {
+    readonly totalTokens: number
+    readonly nodes: readonly TokenSurfaceNodeLike[]
+}
+
+/**
+ * 平台 token 计量服务。
+ *
+ * `measure` 用 `totalTokens` 判阈值；`estimateMessage` 用于压缩后收缩校验。
+ */
+export interface TokenMeterService {
+    measure(session: unknown, requestHeader?: unknown): TokenMeasurementLike
+    estimateMessage(message: unknown): number
+}
+
+/** 平台 LLM 服务（本插件只用到流式调用）。 */
+export interface LlmService {
+    stream(options: unknown): AsyncIterable<unknown>
+}
+
+/** 最近一次路由请求的头（只声明本项目读到的字段）。 */
+export interface RequestHeaderLike {
+    readonly config?: { readonly provider?: string; readonly model?: string; readonly maxTokens?: number }
+    readonly tools?: unknown
 }
 
 // ── 平台会话与消息（只声明本插件读到的形状）───────────────────────────────
@@ -104,7 +145,23 @@ export interface SessionLike {
      * 可选：平台的 `Session` 一定实现它，但测试桩只关心读取面、不必造写入面；
      * 缺失时 H3 照常重试，只是界面看不到那一行提示。
      */
-    append?(type: string, data: unknown): void
+    append?(type: string, data: unknown, opts?: unknown): { seq: number } | void
+    /** 当前会话表面的节点 seq 清单（压缩判定与区间选择用）。 */
+    readonly surface?: { readonly nodes: readonly number[]; readonly replaceGeneration?: number }
+    /** 按 seq 取一条会话事件（压缩的摘要调用要复用它派生消息）。 */
+    eventAt?(seq: number): SessionEventLike | undefined
+    /** 把一条会话事件投影成模型消息（压缩的摘要调用用）。 */
+    deriveEventMessage?(event: unknown): unknown
+    /** 最近一次路由请求的头（压缩取 provider/model/tools 用）。 */
+    requestHeader?(): RequestHeaderLike | undefined
+    /** 会话折叠出的工具历史（压缩的摘要调用要原样透传）。 */
+    toolHistory?(): unknown
+    /** 会话当前的尾部 seq（诊断用）。 */
+    readonly seq?: number
+    /** 会话 id（压缩的摘要调用要原样透传）。 */
+    readonly id?: string
+    /** 会话头：压缩判定「主代理还是子代理」读它的 `origin`（子代理为 `'subagent'`）。 */
+    readonly header?: { readonly origin?: string; readonly delegationDepth?: number }
 }
 
 /** Agent 里本项目用到的面。 */
@@ -112,6 +169,8 @@ export interface AgentLike {
     readonly session: SessionLike
     /** 投递一条引导消息；回合收尾边界上用它把回合掰回再走一步。 */
     steer?(message: unknown): void
+    /** agent 的选项；压缩的摘要调用用它做 provider/model 的兜底来源。 */
+    readonly options?: { readonly provider?: string; readonly model?: string }
 }
 
 // ── 事件载荷（agent/turn-stopping）─────────────────────────────────────────

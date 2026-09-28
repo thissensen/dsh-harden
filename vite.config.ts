@@ -7,12 +7,19 @@
  * @module dsh-harden/vite
  */
 
+import { readFileSync } from 'node:fs'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import { dshModuleLoaderWrap, EXTERNAL_MODULES } from './vite.shared'
 
+/** 包元数据（版本号从这里取，页头显示不再手写常量）。 */
+const packageJson = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }
+
 export default defineConfig({
     plugins: [react(), dshModuleLoaderWrap('dsh-harden')],
+
+    // 版本号在构建期固化成字面量：发版只改 package.json 一处。
+    define: { __PLUGIN_VERSION__: JSON.stringify(packageJson.version) },
 
     build: {
         emptyOutDir: false,

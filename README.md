@@ -24,11 +24,11 @@
 
 3. 第三方API经常出现的：只输出思考直接中断，插件会自动重试
 
-4. 修复打开资源管理器无反应的BUG（设置页可随时装载/卸载接管，装载时只有资源管理器、卸载后官方启动器全回来）
+4. 创建对接pwsh的后台job工具，解决只使用gitbash无法创建超120秒的后台任务
 
-5. 创建对接pwsh的后台job工具，解决只使用gitbash无法创建超120秒的后台任务
+5. 一键修复异常会话日志
 
-6. 一键修复异常会话日志
+6. 上下文自动压缩 —— 会话涨到阈值自动把老历史压成摘要，界面沿用平台自带提示；压缩范围另有下拉框三档可选（全部压缩 / 仅主代理 / 仅子代理，默认全部压缩）
 
 ## 问题截图
 
@@ -86,7 +86,7 @@ pnpm install
 node scripts/link-deps.mjs    # 把宿主包链进本项目的 node_modules
 pnpm build                     # tsc（host）+ vite（client）
 pnpm typecheck                 # 只做类型检查
-pnpm test                      # vitest，50 例
+pnpm test                      # vitest，88 例
 ```
 
 ## 许可

@@ -24,7 +24,6 @@ import { createRequire } from 'node:module'
 import type {
     Ctx,
     Logger,
-    PluginManagerService,
     RequestErrorAction,
     RequestErrorPayload,
     TurnStoppingPayload,
@@ -40,6 +39,7 @@ import { buildRetryEvents, matchesRetryTokens, takeRetrySlot, type RetryBudget }
 import { mountApi } from './api.js'
 import type { ConfigScope } from './api.js'
 import { mountJobBackground } from './job-background.js'
+import { mountContextCompaction } from './compaction.js'
 import { SETTINGS_NAMESPACE } from './config.js'
 
 /** 平台按这个 id 认配置 schema（`Config` 是平台侧的约定名，见 config.ts）。 */
@@ -88,15 +88,17 @@ export function apply(ctx: Ctx, config: unknown): void {
     )
     logger.info?.(`[harden] 规则 H2（回合无正文收尾）= ${now.emptyOutputGuard ? '开' : '关'}`)
     logger.info?.(`[harden] 规则 H3（网络请求中断续跑）= ${now.networkRetryCount > 0 ? `开，兜底 ${now.networkRetryCount} 次` : '关'}`)
+    logger.info?.(
+        `[harden] 规则「上下文自动压缩」= ${now.contextCompaction ? `开，阈值 ${now.compactionThreshold}，范围 ${now.compactionScope}` : '关'}`,
+    )
 
     mountConfigApi(ctx, logger, config)
+    mountContextCompaction(ctx, logger, () => current())
     mountJobBackground(ctx, logger, () => current().backgroundJobTool)
 }
 
 /**
  * 挂设置页的配置通路。
- *
- * 「打开文件夹」已拆到同包第二个入口（`harden-open-folder`），不在这里挂。
  *
  * **为什么用注入回调而不是顶层声明。** `settings` 与 `webServer` 由别的插件提供，
  * 就绪时机与本插件的 `apply` 先后顺序不作保证；等它们都到齐了再建作用域、再注册路由，
@@ -129,10 +131,6 @@ function mountConfigApi(ctx: Ctx, logger: Logger, config: unknown): void {
         mountApi(webCtx, logger, {
             getScope: () => scope,
             trustedHosts,
-            // 用 ctx.get 而不是 ctx.pluginManager：cordis 的属性访问要求该服务在
-            // inject 列表里声明过，否则直接抛「cannot get property ... without inject」。
-            // 本回调只 inject 了 webServer/webRuntime/settings，故改走查询语义。
-            getPluginManager: () => webCtx.get?.<PluginManagerService>('pluginManager'),
         })
     })
 }

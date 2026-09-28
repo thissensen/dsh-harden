@@ -25,7 +25,6 @@ export const zh = {
     'header.checking': '检查中…',
     'header.upToDate': '已是最新',
     'header.github': 'GitHub',
-    'header.githubUnset': '仓库地址未定，暂不可用',
 
     'rule.toolFailureGuard.title': '工具调用失败续跑',
     'rule.toolFailureGuard.desc': '解决有时因为工具调用失败导致的会话突然中断',
@@ -58,6 +57,32 @@ export const zh = {
     'field.retryTokens.help':
         '逗号分隔，可混填错误码（SERVER、RATE_LIMIT、TIMEOUT、TRANSPORT 等）与 HTTP 状态码（502、429 等）。留空表示不重试任何失败。',
 
+    'rule.contextCompaction.title': '上下文自动压缩',
+    'rule.contextCompaction.desc': '会话变长时自动把前面一段浓缩成摘要，释放上下文',
+    'rule.contextCompaction.help':
+        '会话长度达到触发阈值时，插件把较早的一段对话交给模型浓缩成摘要，用摘要顶替原文继续，腾出上下文给后续内容。保留量按平台默认，摘要模型跟随当前会话。',
+
+    'field.compactionScope.title': '压缩范围',
+    'field.compactionScope.help':
+        '总开关打开后，压缩作用在哪些会话上。全部压缩 = 主代理与子代理都压；仅主代理 = 子代理保持原样；仅子代理 = 主代理保持原样。默认全部压缩。',
+    'field.compactionScope.optionAll': '全部压缩',
+    'field.compactionScope.optionMain': '仅主代理',
+    'field.compactionScope.optionSubagent': '仅子代理',
+
+    'field.compactionThreshold.title': '触发阈值',
+    'field.compactionThreshold.desc': '上下文涨到这个量就开始压缩',
+    'field.compactionThreshold.help':
+        '认 1M / 200K / 100000 这类写法：K 等于 1000、M 等于 1000000，不区分大小写。必须是正整数。',
+    'field.compactionThreshold.placeholder': '200K',
+    'field.compactionThreshold.invalid': '阈值格式不对，请填类似 200K 或 100000 的值',
+
+    'field.compactionInstruction.title': '摘要指令',
+    'field.compactionInstruction.desc': '生成摘要时发给模型的指令',
+    'field.compactionInstruction.help':
+        '压缩时连同这段指令一起发给模型，告诉它摘要要覆盖哪些内容，可按自己的习惯改。默认是一段中文 8 段骨架。',
+    'field.compactionInstruction.placeholder':
+        '当前任务：\n已完成：\n待办事项：\n关键决策：\n涉及文件：\n报错与修复：\n用户偏好：\n下一步：',
+
     'api.settingsNotReady': '设置服务未就绪，暂时不能写入',
     'api.bodyReadFailed': '请求体读取失败：{p1}',
     'api.writeFailed': '写入失败：{p1}',
@@ -71,27 +96,16 @@ export const zh = {
     'api.networkRetryTokensInvalid': 'networkRetryTokens 必须是不超过 200 字的字符串',
     'api.toolFailurePrefixesInvalid': 'toolFailurePrefixes 必须是不超过 2000 字的字符串',
     'api.backgroundJobToolNotBoolean': 'backgroundJobTool 必须是布尔值',
-    'api.openFolderEnabledNotBoolean': 'enabled 必须是布尔值',
-    'api.openFolderRowMissing': '找不到「打开文件夹」相关插件行',
-    'api.openFolderToggleFailed': '切换失败：{p1}',
+    'api.contextCompactionNotBoolean': 'contextCompaction 必须是布尔值',
+    'api.compactionScopeInvalid': 'compactionScope 必须是 all、main 或 subagent',
+    'api.compactionThresholdInvalid': 'compactionThreshold 必须是能解析成正整数的字符串',
+    'api.compactionInstructionInvalid': 'compactionInstruction 必须是不超过 10000 字的字符串',
     'api.repairScanFailed': '扫描会话目录失败：{p1}',
 
     'rule.backgroundJobTool.title': '后台任务工具',
     'rule.backgroundJobTool.desc': '创建工具对接 pwsh，让模型能把长命令丢到后台跑，不占住当前回合',
     'rule.backgroundJobTool.help':
         '开启后，模型可以用 job_background 工具起后台命令，再用 job_list / job_output / job_kill 查看和停止。关闭后该工具从工具表里消失。',
-
-    'rule.openFolder.title': '打开文件夹接管',
-    'rule.openFolder.desc': '让「打开方式 → 资源管理器」真正弹出窗口',
-    'rule.openFolder.help':
-        '装载后由本插件接管打开文件夹，点「打开方式 → 资源管理器」会弹出窗口（插件已修好平台原版的窗口不可见问题）。代价：接管期间官方那批启动器（VS Code、Cursor、Git Bash、Windows Terminal 等）不可用。卸载后官方启动器全部恢复。',
-    'rule.openFolder.load': '装载',
-    'rule.openFolder.unload': '卸载',
-    'rule.openFolder.loaded': '已装载：本插件接管中，官方启动器暂不可用',
-    'rule.openFolder.unloaded': '未装载：官方启动器可用',
-    'openFolder.restartTitle': '需要重启 DSH',
-    'openFolder.restartLoadDesc': '已装载「打开文件夹」接管。请重启 DSH 桌面端，改动才会生效。',
-    'openFolder.restartUnloadDesc': '已卸载「打开文件夹」接管。请重启 DSH 桌面端，官方启动器才会恢复。',
 
     'panel.settingsNotReady': '设置服务未就绪',
 
@@ -109,8 +123,6 @@ export const zh = {
     'common.retry': '重试',
     'common.saved': '已保存',
     'common.saveFailed': '保存失败',
-    'common.gotIt': '知道了',
-    'common.close': '关闭',
 } as const
 
 /** 本字典的 key 集合。 */
@@ -128,7 +140,6 @@ export const en: Record<CopyKey, string> = {
     'header.checking': 'Checking…',
     'header.upToDate': 'Up to date',
     'header.github': 'GitHub',
-    'header.githubUnset': 'Repository address not decided yet',
 
     'rule.toolFailureGuard.title': 'Continue after a failed tool call',
     'rule.toolFailureGuard.desc': 'Fixes the conversation stopping abruptly when a tool call fails.',
@@ -161,6 +172,33 @@ export const en: Record<CopyKey, string> = {
     'field.retryTokens.help':
         'Comma-separated; mix failure codes (SERVER, RATE_LIMIT, TIMEOUT, TRANSPORT) with HTTP statuses (502, 429). Empty means no failure is retried.',
 
+    'rule.contextCompaction.title': 'Automatic context compaction',
+    'rule.contextCompaction.desc': 'Condenses an earlier stretch of the conversation into a summary as it grows, freeing up context',
+    'rule.contextCompaction.help':
+        'When the conversation reaches the trigger threshold, the plugin has the model condense an earlier stretch into a summary and continues from that summary instead of the original text, freeing context for what follows. The kept amount follows the platform default, and the summary model follows the current session.',
+
+    'field.compactionScope.title': 'Compaction scope',
+    'field.compactionScope.help':
+        'Once the master switch is on, which sessions compaction applies to. All compacts both the main agent and subagents; Main only leaves subagents untouched; Subagents only leaves the main agent untouched. Defaults to All.',
+    'field.compactionScope.optionAll': 'All',
+    'field.compactionScope.optionMain': 'Main only',
+    'field.compactionScope.optionSubagent': 'Subagents only',
+
+    'field.compactionThreshold.title': 'Trigger threshold',
+    'field.compactionThreshold.desc': 'Compaction starts once the context grows to this size',
+    'field.compactionThreshold.help':
+        'Accepts forms such as 1M / 200K / 100000: K means 1000 and M means 1000000, case-insensitive. It must be a positive integer.',
+    'field.compactionThreshold.placeholder': '200K',
+    'field.compactionThreshold.invalid': 'Invalid threshold; enter a value such as 200K or 100000',
+
+    'field.compactionInstruction.title': 'Summary instruction',
+    'field.compactionInstruction.desc': 'The instruction sent to the model when a summary is generated',
+    'field.compactionInstruction.help':
+        'This instruction is sent along with the conversation when compacting, telling the model what the summary must cover; customize it as you like. The default is a Chinese eight-section skeleton.',
+    'field.compactionInstruction.placeholder':
+        'Current task:\nDone:\nTo do:\nKey decisions:\nFiles involved:\nErrors and fixes:\nUser preferences:\nNext step:',
+
+
     'api.settingsNotReady': 'Settings service is not ready; cannot write yet',
     'api.bodyReadFailed': 'Failed to read the request body: {p1}',
     'api.writeFailed': 'Write failed: {p1}',
@@ -174,27 +212,16 @@ export const en: Record<CopyKey, string> = {
     'api.networkRetryTokensInvalid': 'networkRetryTokens must be a string of at most 200 characters',
     'api.toolFailurePrefixesInvalid': 'toolFailurePrefixes must be a string of at most 2000 characters',
     'api.backgroundJobToolNotBoolean': 'backgroundJobTool must be a boolean',
-    'api.openFolderEnabledNotBoolean': 'enabled must be a boolean',
-    'api.openFolderRowMissing': 'Could not find the "open folder" plugin rows',
-    'api.openFolderToggleFailed': 'Toggle failed: {p1}',
+    'api.contextCompactionNotBoolean': 'contextCompaction must be a boolean',
+    'api.compactionScopeInvalid': 'compactionScope must be one of all, main, subagent',
+    'api.compactionThresholdInvalid': 'compactionThreshold must be a string that parses to a positive integer',
+    'api.compactionInstructionInvalid': 'compactionInstruction must be a string of at most 10000 characters',
     'api.repairScanFailed': 'Failed to scan the sessions directory: {p1}',
 
     'rule.backgroundJobTool.title': 'Background task tool',
     'rule.backgroundJobTool.desc': 'Creates a tool wired to pwsh, letting the model run long commands in the background without blocking the turn',
     'rule.backgroundJobTool.help':
         'When on, the model can start background commands with the job_background tool and manage them with job_list / job_output / job_kill. When off, the tool disappears from the tool list.',
-
-    'rule.openFolder.title': 'Take over opening folders',
-    'rule.openFolder.desc': 'Makes "Open with → Explorer" actually pop up a window',
-    'rule.openFolder.help':
-        'When loaded, the plugin takes over opening folders, so "Open with → Explorer" pops up a window (the plugin fixes the invisible-window bug of the platform original). Trade-off: while loaded, the official launchers (VS Code, Cursor, Git Bash, Windows Terminal, etc.) are unavailable. Unload to bring every official launcher back.',
-    'rule.openFolder.load': 'Load',
-    'rule.openFolder.unload': 'Unload',
-    'rule.openFolder.loaded': 'Loaded: the plugin is taking over; official launchers are unavailable',
-    'rule.openFolder.unloaded': 'Not loaded: official launchers are available',
-    'openFolder.restartTitle': 'Restart DSH to apply',
-    'openFolder.restartLoadDesc': 'The folder-opening takeover is now loaded. Restart the DSH desktop app for it to take effect.',
-    'openFolder.restartUnloadDesc': 'The folder-opening takeover is now unloaded. Restart the DSH desktop app to bring the official launchers back.',
 
     'panel.settingsNotReady': 'Settings service is not ready',
 
@@ -212,8 +239,6 @@ export const en: Record<CopyKey, string> = {
     'common.retry': 'Retry',
     'common.saved': 'Saved',
     'common.saveFailed': 'Save failed',
-    'common.gotIt': 'Got it',
-    'common.close': 'Close',
 }
 
 /**

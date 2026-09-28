@@ -16,7 +16,7 @@
   <a href="https://github.com/thissensen/dsh-harden">GitHub</a>
 </p>
 
-> **Status**: guard rules H1, H2 and H3 are all implemented; **all 50 tests pass**, typecheck is clean, and the build succeeds.
+> **Status**: guard rules H1, H2 and H3 are all implemented; **all 88 tests pass**, typecheck is clean, and the build succeeds.
 
 ## What it solves
 
@@ -39,10 +39,10 @@ In one sentence: **an explicit failure is fine; a silent stop is not.**
 - **Recover a turn that ends without any reply text** — when the last step has only reasoning, the turn is pulled back for one more step.
 - **Continue after a network interruption** — after the official retry budget runs out, the plugin adds extra attempts for the failure kinds you list.
 - **Background task tool** — gives the model a `job_background` tool to run long commands in the background without blocking the turn.
-- **Open folder takeover** — fixes the platform bug where "Open with → Explorer" did nothing. Load/unload it any time from the settings page: while loaded only Explorer is offered; unload to bring every official launcher back.
 - **Unbounded and switchable** — no cap on injections, and every rule has its own toggle.
 - **Never touches your config or patches the platform** — switches live in the platform `settings`; it only listens to public events and patches no `@deepseek-ai/*` package.
 - **One-click repair of corrupted session logs** — when a session log gets corrupted and the platform refuses to open the history, the settings page scans and repairs it in one click.
+- **Automatic context compaction** — once the conversation grows past a threshold, the older history is condensed into a summary; the UI reuses the platform's own notice.
 
 ## Problem screenshots
 
@@ -114,7 +114,7 @@ dsh plugin --profile web add link:<absolute path to this repo>
 
 ## Settings
 
-The settings page lives under the "DSH Optimize" section and has five cards:
+The settings page lives under the "DSH Optimize" section and has six cards:
 
 | Card | Description |
 |---|---|
@@ -122,7 +122,8 @@ The settings page lives under the "DSH Optimize" section and has five cards:
 | **Turn ends without a reply** | Toggle. A turn whose last step has only reasoning is pulled back for one more step. |
 | **Continue after a network interruption** | Toggle plus **Network retry count** (0–99 extra attempts after the official retries run out; 0 disables it) and **Failures that trigger a retry** (failure codes `SERVER` / `RATE_LIMIT` / `TIMEOUT` / `TRANSPORT` and HTTP statuses `502` / `429`; empty retries nothing). |
 | **Background task tool** | Toggle. When on, the model can start background commands with `job_background` and manage them with `job_list` / `job_output` / `job_kill`. When off, the tool disappears. |
-| **Open folder takeover** | Load / Unload button. While loaded, the plugin takes over opening folders so "Open with → Explorer" pops up a window; the official launchers (VS Code, Cursor, Git Bash, Windows Terminal, …) are unavailable. Unload to bring every official launcher back. After switching, a dialog reminds you to restart the DSH desktop app, because the change only takes effect after a restart. |
+| **Automatic context compaction** | Toggle plus **Compaction scope** (a dropdown: All / Main only / Subagents only — default All), **Trigger threshold** (e.g. `200K` / `1M` / `100000`; the platform default is `200K`) and **Summary instruction** (the instruction sent to the model when a summary is generated). Once the session exceeds the threshold, an earlier stretch of history is condensed into a summary and the platform's own "context compacted" notice is shown. |
+| **Repair corrupted sessions** | Scan button. Scans every session log and repairs the two known kinds of corruption, so a history that refuses to open becomes usable again. |
 
 > ⚠️ **The one that matters most**: **"Failure warning prefixes" is empty by default, so leaving it blank after install means rule H1 is off.** Open the settings page and paste the fixed beginning of your platform's warning text (example: `⚠ Could not execute tool`).
 
@@ -133,7 +134,7 @@ pnpm install
 node scripts/link-deps.mjs    # link host packages into this project's node_modules
 pnpm build                     # tsc (host) + vite (client)
 pnpm typecheck                 # type check only
-pnpm test                      # vitest, 50 tests
+pnpm test                      # vitest, 88 tests
 ```
 
 ## Design

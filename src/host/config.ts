@@ -12,7 +12,7 @@
  */
 
 import z from '@deepseek-ai/schemastery'
-import type { HardenConfig } from './types.js'
+import type { CompactionScope, HardenConfig } from './types.js'
 
 export type { HardenConfig } from './types.js'
 
@@ -50,6 +50,63 @@ export const DEFAULT_NETWORK_RETRY_TOKENS = 'SERVER,RATE_LIMIT,TIMEOUT,TRANSPORT
 /** 默认值：工具 `job_background`（把命令放后台 job 执行）的开关。默认**开**。 */
 export const DEFAULT_BACKGROUND_JOB_TOOL = true
 
+/** 默认值：规则「上下文自动压缩」的开关。默认**关**（用户定稿：压缩会改会话历史，默认不动手，用户自己去设置页打开）。 */
+export const DEFAULT_CONTEXT_COMPACTION = false
+
+/** 「上下文自动压缩」作用范围的全部取值（schema 的枚举来源）。 */
+export const COMPACTION_SCOPES = ['all', 'main', 'subagent'] as const satisfies readonly CompactionScope[]
+
+/**
+ * 默认值：「上下文自动压缩」的作用范围。
+ *
+ * 默认**全部压缩**——总开关打开后，主代理与子代理都压（用户定稿）。
+ */
+export const DEFAULT_COMPACTION_SCOPE: CompactionScope = 'all'
+
+/** 默认值：触发自动压缩的上下文 token 阈值（字符串写法，认 1M / 200K / 100000）。 */
+export const DEFAULT_COMPACTION_THRESHOLD = '200K'
+
+/**
+ * 默认值：交给摘要模型的压缩指令（中文 8 段骨架，用户可改）。
+ *
+ * 原文与官方 `dsh-compaction-basic` 的英文版同构，只是改成中文并要求中文输出。
+ */
+export const DEFAULT_COMPACTION_INSTRUCTION = [
+    '你现在是这段 AI 编程对话的压缩引擎。请把上方的对话浓缩成一份结构化摘要，让另一个模型能在不丢失关键上下文的情况下接续工作。',
+    '',
+    '严格按下面的 Markdown 结构输出，每一节都要保留、顺序不变。用简短的要点，不要写成长段。某节没有内容就写「（无）」，不要省略任何一节。',
+    '',
+    '## 用户目标',
+    '- [用户最初及演变中的目标；措辞重要时原样引用]',
+    '',
+    '## 关键技术',
+    '- [涉及的技术、框架、模式与约定]',
+    '',
+    '## 文件与代码',
+    '- [精确路径：为什么重要、关键改动或代码片段]',
+    '',
+    '## 错误与修复',
+    '- [错误：如何解决，以及相关的用户反馈]',
+    '',
+    '## 待办',
+    '- [明确要求但尚未完成的工作]',
+    '',
+    '## 当前进度',
+    '- [压缩这一刻正在做什么]',
+    '',
+    '## 下一步',
+    '- [紧接着的单一动作，与最近的请求直接对齐，或「（无）」]',
+    '',
+    '## 关键背景',
+    '- [决策及其理由、约束、用户偏好、未决问题、继续所需的数据]',
+    '',
+    '规则：',
+    '- 用简洁的中文工程语言书写。精确保留文件路径、命令、错误原文、标识符、数值、函数签名与语法片段。',
+    '- 忠实记录用户反馈与明确指令，尤其是纠正。',
+    '- 不要提及这次摘要请求，也不要提及上下文被压缩过。',
+    '- 只输出摘要正文：不要调用任何工具，不要做任何其它动作。',
+].join('\n')
+
 /** 平台按这个名字认配置 schema（`Config = { … }` 是平台侧的约定名）。 */
 export const Config = z.object({
     toolFailureGuard: z.boolean().default(DEFAULT_TOOL_FAILURE_GUARD).volatile(),
@@ -58,6 +115,10 @@ export const Config = z.object({
     networkRetryCount: z.number().default(DEFAULT_NETWORK_RETRY_COUNT).volatile(),
     networkRetryTokens: z.string().default(DEFAULT_NETWORK_RETRY_TOKENS).volatile(),
     backgroundJobTool: z.boolean().default(DEFAULT_BACKGROUND_JOB_TOOL).volatile(),
+    contextCompaction: z.boolean().default(DEFAULT_CONTEXT_COMPACTION).volatile(),
+    compactionScope: z.union(COMPACTION_SCOPES).default(DEFAULT_COMPACTION_SCOPE).volatile(),
+    compactionThreshold: z.string().default(DEFAULT_COMPACTION_THRESHOLD).volatile(),
+    compactionInstruction: z.string().default(DEFAULT_COMPACTION_INSTRUCTION).volatile(),
 })
 
 /**
@@ -80,6 +141,10 @@ export function readConfig(raw: unknown): Required<HardenConfig> {
         networkRetryCount: unwrapField(obj.networkRetryCount, DEFAULT_NETWORK_RETRY_COUNT, 'number'),
         networkRetryTokens: unwrapField(obj.networkRetryTokens, DEFAULT_NETWORK_RETRY_TOKENS, 'string'),
         backgroundJobTool: unwrapField(obj.backgroundJobTool, DEFAULT_BACKGROUND_JOB_TOOL, 'boolean'),
+        contextCompaction: unwrapField(obj.contextCompaction, DEFAULT_CONTEXT_COMPACTION, 'boolean'),
+        compactionScope: readCompactionScope(obj.compactionScope),
+        compactionThreshold: unwrapField(obj.compactionThreshold, DEFAULT_COMPACTION_THRESHOLD, 'string'),
+        compactionInstruction: unwrapField(obj.compactionInstruction, DEFAULT_COMPACTION_INSTRUCTION, 'string'),
     }
 }
 
@@ -92,6 +157,10 @@ export function defaultConfig(): Required<HardenConfig> {
         networkRetryCount: DEFAULT_NETWORK_RETRY_COUNT,
         networkRetryTokens: DEFAULT_NETWORK_RETRY_TOKENS,
         backgroundJobTool: DEFAULT_BACKGROUND_JOB_TOOL,
+        contextCompaction: DEFAULT_CONTEXT_COMPACTION,
+        compactionScope: DEFAULT_COMPACTION_SCOPE,
+        compactionThreshold: DEFAULT_COMPACTION_THRESHOLD,
+        compactionInstruction: DEFAULT_COMPACTION_INSTRUCTION,
     }
 }
 
@@ -99,6 +168,14 @@ export function defaultConfig(): Required<HardenConfig> {
 function unwrapField<T>(value: unknown, fallback: T, expectedType: 'boolean' | 'number' | 'string'): T {
     const resolved = readRef(value)
     return typeof resolved === expectedType ? (resolved as T) : fallback
+}
+
+/** 解包压缩范围：只认三个合法取值，其余一律回落默认（含老字段残留、引用解包失败）。 */
+function readCompactionScope(value: unknown): CompactionScope {
+    const resolved = readRef(value)
+    if (resolved === 'all' || resolved === 'main' || resolved === 'subagent') return resolved
+
+    return DEFAULT_COMPACTION_SCOPE
 }
 
 /** 若值是平台包出来的 `{ get() }` 引用，取它的当前值；否则原样返回。 */

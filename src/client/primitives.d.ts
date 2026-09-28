@@ -13,7 +13,7 @@
  */
 
 declare module '@deepseek-ai/dsh-client-ui-primitives' {
-    import type { ButtonHTMLAttributes, InputHTMLAttributes, KeyboardEventHandler, ReactElement, ReactNode } from 'react'
+    import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactElement, ReactNode } from 'react'
 
     /** 按钮：`icon` 是可选的行首图标节点；其余原生 button 属性透传。 */
     export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -52,30 +52,6 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
     export const IconQuestionOutlineRegular: (props: IconProps) => ReactElement
     export const IconRefreshOutlineRegular: (props: IconProps) => ReactElement
 
-    /**
-     * 居中对话框（portal 到 body）。
-     *
-     * 非 headless 模式渲染默认头部与关闭按钮，此时 closeLabel 必填（无障碍名）；
-     * headless: true 时头部整块由调用方自绘，closeLabel 不再需要。
-     */
-    export type ModalProps = {
-        open: boolean
-        onClose: () => void
-        title: string
-        description?: string
-        children?: ReactNode
-        footer?: ReactNode
-        className?: string
-        contentClassName?: string
-        onKeyDownCapture?: KeyboardEventHandler<HTMLDivElement>
-        backdropBlur?: boolean
-        shortcutModal?: string
-    } & (
-        | { headless: true; closeLabel?: never }
-        | { headless?: false; closeLabel: string }
-    )
-    export const Modal: (props: ModalProps) => ReactElement | null
-
     /** 悬停提示：把气泡挂在单个锚点元素上（锚点自己的事件会被链在提示的处理器之后）。 */
     export interface TooltipProps {
         label: string | (() => string)
@@ -89,4 +65,61 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
         children: ReactElement
     }
     export const Tooltip: (props: TooltipProps) => ReactElement
+
+    /**
+     * 下拉菜单（平台没有原生 select，下拉一律用它 + 自绘锚点）。
+     *
+     * 受控：`open` 由调用方管；行选中与关闭各回调一次。`selectedId` 给选中行打勾，
+     * `side` / `portal` 控制弹出方向与是否 portal 到 body。
+     */
+    export interface MenuItem {
+        id: string
+        label: ReactNode
+        disabled?: boolean
+        danger?: boolean
+        submenu?: readonly MenuItem[]
+    }
+    export interface MenuSeparator {
+        type: 'separator'
+        id: string
+    }
+    export interface MenuLabel {
+        type: 'label'
+        id: string
+        text: string
+    }
+    export type MenuEntry = MenuItem | MenuSeparator | MenuLabel
+    export interface MenuProps {
+        open: boolean
+        autoFocus?: boolean
+        anchor: ReactNode
+        items?: readonly MenuEntry[]
+        children?: ReactNode
+        footer?: readonly MenuEntry[]
+        selectedId?: string
+        selectedIds?: readonly string[]
+        onSelect?: (id: string) => void
+        onClose: () => void
+        align?: 'start' | 'end'
+        side?: 'bottom' | 'top' | 'right'
+        portal?: boolean
+        closeOnPointerLeave?: boolean
+        dense?: boolean
+        compact?: boolean
+        selection?: 'check' | 'fill'
+        getAnchorRect?: () => DOMRect | null
+        className?: string
+        listClassName?: string
+    }
+    export const Menu: (props: MenuProps) => ReactElement
+
+    /** 下拉锚点尾部那只朝下的箭头（展开时由调用方换向上箭头，这里只声明两只）。 */
+    export const IconChevronDownOutlineRegular: (props: IconProps) => ReactElement
+    export const IconChevronUpOutlineRegular: (props: IconProps) => ReactElement
+
+    /** 平台「下拉锚点」常用的菜单面板外壳（本项目未用到，声明留给后续）。 */
+    export interface MenuSurfaceProps extends HTMLAttributes<HTMLDivElement> {
+        compact?: boolean
+    }
+    export const MenuSurface: (props: MenuSurfaceProps) => ReactElement
 }

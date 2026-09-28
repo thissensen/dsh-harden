@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import { repairSessionFile, scanSessionFiles } from './session-repair.js'
-import type { Ctx, HardenConfig, Logger, PluginManagerService, WebServerService } from './types.js'
+import type { Ctx, HardenConfig, Logger, WebServerService } from './types.js'
 
 /** 本插件的路由前缀。 */
 const API_PREFIX = '/api/dsh-harden'
@@ -32,12 +32,6 @@ const CLIENT_MARKER_HEADER = 'x-dsh-harden'
 
 /** 请求体上限，防止畸形请求把内存吃光。 */
 const MAX_BODY_BYTES = 1 << 20
-
-/** 「打开文件夹」子入口的模块名（`cordis.patch.yml` 里那条 row 的 name）。 */
-const OPEN_FOLDER_MODULE_NAME = 'dsh-harden/open-folder'
-
-/** 平台官方「打开方式」host 行的模块名（与它成对切换）。 */
-const OPEN_IN_APP_MODULE_NAME = '@deepseek-ai/dsh-host-open-in-app'
 
 /** 会话仓库目录名（DSH_HOME 下面那一层）。 */
 const SESSIONS_DIR_NAME = 'sessions'
@@ -65,8 +59,6 @@ export interface ApiDeps {
     getScope: () => ConfigScope | undefined
     /** 用户显式信任的 authority 清单（来自 `webRuntime`）；为空时只允许回环地址。 */
     trustedHosts?: string[]
-    /** 现问现取：平台插件管理服务，用于成对切换「打开文件夹」两条 row。 */
-    getPluginManager: () => PluginManagerService | undefined
 }
 
 /** 把 authority 字符串解析成 URL，失败返回 undefined。 */
@@ -260,6 +252,30 @@ function escapeArg(text: string): string {
 }
 
 /**
+ * 把阈值文本解析成正整数：`K` 等于 1000、`M` 等于 1000000，不区分大小写，允许首尾空白。
+ *
+ * 口径与看护侧（compaction.ts 的 parseTokenCount）一致；这里不去 import 那份实现，
+ * 两边各自守住同一套规则，client 发来的值先在这里挡下非法输入。
+ *
+ * @param text - 待解析的阈值文本。
+ * @returns 解析出的正整数；格式不对或不是正数时返回 null。
+ */
+function parseThresholdText(text: string): number | null {
+    const trimmed = text.trim()
+    const matched = /^(\d+)([KkMm]?)$/.exec(trimmed)
+    if (matched === null) return null
+
+    const base = Number.parseInt(matched[1], 10)
+    if (base <= 0) return null
+
+    const unit = matched[2].toUpperCase()
+    if (unit === 'K') return base * 1000
+    if (unit === 'M') return base * 1000000
+
+    return base
+}
+
+/**
  * `GET /config`：把当前配置交给设置页。
  *
  * 设置服务未就绪时 `config` 为 null——那是「还没准备好」，不是「读失败」，
@@ -341,6 +357,32 @@ async function handleUpdateConfig(req: IncomingMessage, res: ServerResponse, dep
         return
     }
 
+    const contextCompaction = body?.contextCompaction
+    if (typeof contextCompaction !== 'boolean') {
+        json(res, 400, { ok: false, error: 'api.contextCompactionNotBoolean' })
+        return
+    }
+
+    const compactionScope = body?.compactionScope
+    const isValidCompactionScope =
+        compactionScope === 'all' || compactionScope === 'main' || compactionScope === 'subagent'
+    if (isValidCompactionScope === false) {
+        json(res, 400, { ok: false, error: 'api.compactionScopeInvalid' })
+        return
+    }
+
+    const compactionThreshold = body?.compactionThreshold
+    if (typeof compactionThreshold !== 'string' || parseThresholdText(compactionThreshold) === null) {
+        json(res, 400, { ok: false, error: 'api.compactionThresholdInvalid' })
+        return
+    }
+
+    const compactionInstruction = body?.compactionInstruction
+    if (typeof compactionInstruction !== 'string' || compactionInstruction.length > 10000) {
+        json(res, 400, { ok: false, error: 'api.compactionInstructionInvalid' })
+        return
+    }
+
     try {
         await scope.update({
             toolFailureGuard,
@@ -349,6 +391,10 @@ async function handleUpdateConfig(req: IncomingMessage, res: ServerResponse, dep
             networkRetryCount,
             networkRetryTokens,
             backgroundJobTool,
+            contextCompaction,
+            compactionScope,
+            compactionThreshold,
+            compactionInstruction,
         })
 
     } catch (error) {
@@ -357,106 +403,6 @@ async function handleUpdateConfig(req: IncomingMessage, res: ServerResponse, dep
     }
 
     json(res, 200, { ok: true })
-}
-
-/**
- * `GET /open-folder`：报「打开文件夹」子入口当前装载状态。
- *
- * pluginManager 缺失或找不到那条 row 时回 `enabled: false`——那是「当前未装载」的
- * 如实反映，不是错误。
- *
- * @param res - Node 的响应对象。
- * @param deps - 取值依赖。
- */
-async function handleGetOpenFolder(res: ServerResponse, deps: ApiDeps): Promise<void> {
-    const pluginManager = deps.getPluginManager()
-    if (pluginManager === undefined) {
-        json(res, 200, { ok: true, enabled: false })
-        return
-    }
-
-    let rows
-    try {
-        rows = await pluginManager.listPlugins()
-
-    } catch {
-        // 平台服务异常时同样按「当前未装载」回报，不把面板推到红卡。
-        json(res, 200, { ok: true, enabled: false })
-        return
-    }
-
-    const row = rows.find((item) => item.moduleName === OPEN_FOLDER_MODULE_NAME)
-
-    json(res, 200, { ok: true, enabled: row?.enabled ?? false })
-}
-
-/**
- * `POST /open-folder`：装载/卸载「打开文件夹」子入口。
- *
- * **为什么成对切换。** 只切入口不行——包自带 bundle patch 里 `open-in-app: disabled`
- * 是静态的，卸载入口后官方行仍被禁，启动器回不来。必须同时把官方行 enable 回来。
- *
- * **为什么顺序 await。** 平台 setPluginEnabled 内部要拿文件锁，Promise.all 会打架。
- *
- * @param req - Node 的请求对象。
- * @param res - Node 的响应对象。
- * @param deps - 取值依赖。
- */
-async function handlePostOpenFolder(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): Promise<void> {
-    const requestError = validateMutationRequest(req, deps.trustedHosts ?? [])
-    if (requestError !== null) {
-        json(res, requestError.statusCode, { ok: false, error: requestError.error })
-        return
-    }
-
-    let body: Record<string, unknown> | undefined
-    try {
-        body = await readJsonBody(req) as typeof body
-
-    } catch (error) {
-        const statusCode = (error as { statusCode?: number }).statusCode ?? 400
-        json(res, statusCode, { ok: false, error: `api.bodyReadFailed|${escapeArg(errText(error))}` })
-        return
-    }
-
-    const enabled = body?.enabled
-    if (typeof enabled !== 'boolean') {
-        json(res, 400, { ok: false, error: 'api.openFolderEnabledNotBoolean' })
-        return
-    }
-
-    const pluginManager = deps.getPluginManager()
-    if (pluginManager === undefined) {
-        json(res, 503, { ok: false, error: 'api.settingsNotReady' })
-        return
-    }
-
-    let rows
-    try {
-        rows = await pluginManager.listPlugins()
-
-    } catch (error) {
-        json(res, 400, { ok: false, error: `api.openFolderToggleFailed|${escapeArg(errText(error))}` })
-        return
-    }
-
-    const openFolderRow = rows.find((item) => item.moduleName === OPEN_FOLDER_MODULE_NAME)
-    const openInAppRow = rows.find((item) => item.moduleName === OPEN_IN_APP_MODULE_NAME)
-    if (openFolderRow === undefined || openInAppRow === undefined) {
-        json(res, 503, { ok: false, error: 'api.openFolderRowMissing' })
-        return
-    }
-
-    try {
-        await pluginManager.setPluginEnabled(openFolderRow.entryId, enabled)
-        await pluginManager.setPluginEnabled(openInAppRow.entryId, !enabled)
-
-    } catch (error) {
-        json(res, 400, { ok: false, error: `api.openFolderToggleFailed|${escapeArg(errText(error))}` })
-        return
-    }
-
-    json(res, 200, { ok: true, enabled })
 }
 
 /** 会话修复明细组里的一行。 */
@@ -549,7 +495,7 @@ async function handleRepairSessions(req: IncomingMessage, res: ServerResponse, d
  *
  * @param ctx - 插件所在的 context。
  * @param logger - 日志出口。
- * @param deps - `{ getScope, trustedHosts, getPluginManager }`。
+ * @param deps - `{ getScope, trustedHosts }`。
  */
 export function mountApi(ctx: Ctx, logger: Logger, deps: ApiDeps): void {
     const webServer = ctx.webServer as WebServerService | undefined
@@ -581,16 +527,6 @@ export function mountApi(ctx: Ctx, logger: Logger, deps: ApiDeps): void {
 
             if (req.method === 'POST' && path === `${API_PREFIX}/config`) {
                 await handleUpdateConfig(req, res, deps)
-                return
-            }
-
-            if (req.method === 'GET' && path === `${API_PREFIX}/open-folder`) {
-                await handleGetOpenFolder(res, deps)
-                return
-            }
-
-            if (req.method === 'POST' && path === `${API_PREFIX}/open-folder`) {
-                await handlePostOpenFolder(req, res, deps)
                 return
             }
 

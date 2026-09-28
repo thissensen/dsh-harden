@@ -12,9 +12,13 @@
 import { describe, expect, it } from 'vitest'
 import {
     DEFAULT_BACKGROUND_JOB_TOOL,
+    DEFAULT_COMPACTION_INSTRUCTION,
+    DEFAULT_COMPACTION_THRESHOLD,
+    DEFAULT_CONTEXT_COMPACTION,
     DEFAULT_EMPTY_OUTPUT_GUARD,
     DEFAULT_NETWORK_RETRY_COUNT,
     DEFAULT_NETWORK_RETRY_TOKENS,
+    DEFAULT_COMPACTION_SCOPE,
     DEFAULT_TOOL_FAILURE_GUARD,
     DEFAULT_TOOL_FAILURE_PREFIXES,
     defaultConfig,
@@ -61,5 +65,42 @@ describe('配置层默认值', () => {
         expect(config.networkRetryCount).toBe(DEFAULT_NETWORK_RETRY_COUNT)
         expect(config.networkRetryTokens).toBe(DEFAULT_NETWORK_RETRY_TOKENS)
         expect(config.backgroundJobTool).toBe(DEFAULT_BACKGROUND_JOB_TOOL)
+        expect(config.contextCompaction).toBe(DEFAULT_CONTEXT_COMPACTION)
+        expect(config.compactionScope).toBe(DEFAULT_COMPACTION_SCOPE)
+        expect(config.compactionThreshold).toBe(DEFAULT_COMPACTION_THRESHOLD)
+        expect(config.compactionInstruction).toBe(DEFAULT_COMPACTION_INSTRUCTION)
+    })
+
+    it('压缩范围默认全部压缩，且能解包 volatile 引用', () => {
+        expect(readConfig({}).compactionScope).toBe(DEFAULT_COMPACTION_SCOPE)
+        expect(readConfig({ compactionScope: { get: () => 'main' } }).compactionScope).toBe('main')
+        expect(readConfig({ compactionScope: { get: () => 'subagent' } }).compactionScope).toBe('subagent')
+    })
+
+    it('readConfig 对非法压缩范围回落到默认值（含老字段残留）', () => {
+        expect(readConfig({ compactionScope: 'yes' }).compactionScope).toBe(DEFAULT_COMPACTION_SCOPE)
+        expect(readConfig({ subagentCompaction: false }).compactionScope).toBe(DEFAULT_COMPACTION_SCOPE)
+    })
+
+    it('readConfig 解包新压缩字段的 volatile 引用', () => {
+        const raw = {
+            contextCompaction: { get: () => false },
+            compactionThreshold: { get: () => '1M' },
+            compactionInstruction: { get: () => '只输出一句话' },
+        }
+        const config = readConfig(raw)
+
+        expect(config.contextCompaction).toBe(false)
+        expect(config.compactionThreshold).toBe('1M')
+        expect(config.compactionInstruction).toBe('只输出一句话')
+    })
+
+    it('readConfig 对类型不符的新压缩字段回落到默认值', () => {
+        const raw = { contextCompaction: 'yes', compactionThreshold: 200, compactionInstruction: null }
+        const config = readConfig(raw)
+
+        expect(config.contextCompaction).toBe(DEFAULT_CONTEXT_COMPACTION)
+        expect(config.compactionThreshold).toBe(DEFAULT_COMPACTION_THRESHOLD)
+        expect(config.compactionInstruction).toBe(DEFAULT_COMPACTION_INSTRUCTION)
     })
 })

@@ -18,14 +18,17 @@ import { createElement, useEffect, useState } from 'react'
 import type { ChangeEvent, CSSProperties, ReactElement } from 'react'
 import {
     Button,
+    IconChevronDownOutlineRegular,
+    IconChevronUpOutlineRegular,
     IconQuestionOutlineRegular,
     IconRefreshOutlineRegular,
     IconShieldOutlineRegular,
     Input,
-    Modal,
+    Menu,
     Switch,
     Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import { translateHostText, translateZh } from '../locales'
 import type { PlatformTranslate } from '../locales'
 
@@ -34,11 +37,22 @@ export interface PanelProps {
     t?: PlatformTranslate
 }
 
-/** 插件版本号（与 `package.json` 的 `version` 保持一致）。 */
-const PLUGIN_VERSION = '0.0.1-preview.1'
+/**
+ * 插件版本号。
+ *
+ * 由构建期从 `package.json` 注入（见 `vite.config.ts` 的 `define`）——发版只改
+ * `package.json` 一处，页面自动跟上，不再有手写常量与真实版本脱节的问题。
+ */
+const PLUGIN_VERSION = __PLUGIN_VERSION__
 
 /** 包名（页头那行灰字）。 */
 const PACKAGE_NAME = 'dsh-harden'
+
+/** 仓库地址（页头 GitHub 按钮跳这里）。 */
+const GITHUB_URL = 'https://github.com/thissensen/dsh-harden'
+
+/** 压缩范围（与 host 侧配置同口径）。 */
+type CompactionScope = 'all' | 'main' | 'subagent'
 
 /** host 侧配置的形状（每条看护规则一组开关/参数）。 */
 interface HardenSettings {
@@ -48,6 +62,10 @@ interface HardenSettings {
     networkRetryCount: number
     networkRetryTokens: string
     backgroundJobTool: boolean
+    contextCompaction: boolean
+    compactionScope: CompactionScope
+    compactionThreshold: string
+    compactionInstruction: string
 }
 
 /** 兜底重试次数的合法区间（与 host 侧 api.ts 的校验保持一致）。 */
@@ -69,14 +87,8 @@ interface Notice {
 /** 「检查更新」的本地三态占位（接口未定，不真发网络请求）。 */
 type UpdatePhase = 'idle' | 'checking' | 'latest'
 
-/** 装载 / 卸载「打开文件夹」接管的方向（弹窗文案按它分岔）。 */
-type OpenFolderToggle = 'load' | 'unload'
-
 /** 配置端点（读与写共用）。 */
 const CONFIG_ENDPOINT = '/api/dsh-harden/config'
-
-/** 「打开文件夹」接管端点：读装载状态、装载/卸载。 */
-const OPEN_FOLDER_ENDPOINT = '/api/dsh-harden/open-folder'
 
 /** 会话修复端点：扫描并修复全部会话文件。 */
 const REPAIR_ENDPOINT = '/api/dsh-harden/repair-sessions'
@@ -142,13 +154,48 @@ async function loadSettings(): Promise<HardenSettings> {
         networkRetryCount: typeof fields.networkRetryCount === 'number' ? fields.networkRetryCount : 3,
         networkRetryTokens: typeof fields.networkRetryTokens === 'string' ? fields.networkRetryTokens : '',
         backgroundJobTool: typeof fields.backgroundJobTool === 'boolean' ? fields.backgroundJobTool : true,
+        contextCompaction: typeof fields.contextCompaction === 'boolean' ? fields.contextCompaction : false,
+        compactionScope: readCompactionScope(fields.compactionScope),
+        compactionThreshold: typeof fields.compactionThreshold === 'string' ? fields.compactionThreshold : '200K',
+        compactionInstruction: typeof fields.compactionInstruction === 'string' ? fields.compactionInstruction : '',
     }
+}
+
+/** 读压缩范围：只认 main / subagent，其余（含缺字段、老字段残留）一律当 all。 */
+function readCompactionScope(value: unknown): CompactionScope {
+    if (value === 'main' || value === 'subagent') return value
+
+    return 'all'
 }
 
 /** 把异常转成可显示的一行。 */
 function messageOf(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
 }
+
+/**
+ * 把阈值文本解析成正整数：`K` 等于 1000、`M` 等于 1000000，不区分大小写，允许首尾空白。
+ *
+ * 口径与 host 侧一致，两边各留一份实现——client 半边够不到 host 模块。
+ *
+ * @param text - 用户填的阈值文本。
+ * @returns 解析出的正整数；格式不对或不是正数时返回 null。
+ */
+function parseThresholdText(text: string): number | null {
+    const trimmed = text.trim()
+    const matched = /^(\d+)([KkMm]?)$/.exec(trimmed)
+    if (matched === null) return null
+
+    const base = Number.parseInt(matched[1], 10)
+    if (base <= 0) return null
+
+    const unit = matched[2].toUpperCase()
+    if (unit === 'K') return base * 1000
+    if (unit === 'M') return base * 1000000
+
+    return base
+}
+
 
 // ── 面板 ────────────────────────────────────────────────────────────────
 
@@ -164,8 +211,6 @@ export function HardenPanel(props: PanelProps): ReactElement {
     const [busy, setBusy] = useState(false)
     const [notice, setNotice] = useState<Notice | null>(null)
     const [updatePhase, setUpdatePhase] = useState<UpdatePhase>('idle')
-    const [openFolderEnabled, setOpenFolderEnabled] = useState<boolean | null>(null)
-    const [restartHint, setRestartHint] = useState<OpenFolderToggle | null>(null)
 
     useEffect(() => {
         let alive = true
@@ -180,15 +225,6 @@ export function HardenPanel(props: PanelProps): ReactElement {
             } catch (error) {
                 if (alive) setState({ status: 'failed', message: messageOf(error) })
                 return
-            }
-
-            try {
-                const data = await fetchJson(OPEN_FOLDER_ENDPOINT)
-                if (alive) setOpenFolderEnabled(data.enabled === true)
-
-            } catch {
-                // 读不到就当未装载：按钮照常可用，点了会再试一次。
-                if (alive) setOpenFolderEnabled(false)
             }
         }
 
@@ -240,42 +276,6 @@ export function HardenPanel(props: PanelProps): ReactElement {
         }
     }
 
-    /**
-     * 装载 / 卸载「打开文件夹」接管。
-     *
-     * 与配置写回分开走：这一步改的是平台插件表（host 侧会成对切换两条 row），
-     * 不是插件配置，所以不复用 applyPatch。
-     *
-     * 成功后弹一次「需重启」提示：装载状态在宿主进程里即时切换，但必须重启 DSH
-     * 桌面端才真正生效，不给提示用户会以为已经生效。
-     *
-     * @param next - true 装载、false 卸载。
-     */
-    async function toggleOpenFolder(next: boolean): Promise<void> {
-        if (openFolderEnabled === null || busy) return
-
-        const previous = openFolderEnabled
-
-        setBusy(true)
-        setNotice(null)
-        setOpenFolderEnabled(next)
-
-        try {
-            await postJson(OPEN_FOLDER_ENDPOINT, { enabled: next })
-            setRestartHint(next ? 'load' : 'unload')
-
-        } catch (error) {
-            setOpenFolderEnabled(previous)
-            setNotice({
-                kind: 'error',
-                text: `${t('common.saveFailed')}：${translateHostText(t, messageOf(error))}`,
-            })
-
-        } finally {
-            setBusy(false)
-        }
-    }
-
     /** 读取失败后的重试：回到加载态，把加载效果重新跑一遍。 */
     function retry(): void {
         setState({ status: 'loading' })
@@ -283,32 +283,14 @@ export function HardenPanel(props: PanelProps): ReactElement {
         setAttempt(attempt + 1)
     }
 
-    /** 关掉「需重启」提示。 */
-    function closeRestartHint(): void {
-        setRestartHint(null)
-    }
-
-    // 装载 / 卸载刚成功时弹一次：宿主侧已切换，但浏览器壳不重启看不到变化。
-    const restartModal = restartHint === null
-        ? null
-        : createElement(Modal, {
-            open: true,
-            onClose: closeRestartHint,
-            title: t('openFolder.restartTitle'),
-            closeLabel: t('common.close'),
-            description: restartHint === 'load' ? t('openFolder.restartLoadDesc') : t('openFolder.restartUnloadDesc'),
-            footer: createElement(Button, { variant: 'primary', size: 'sm', onClick: closeRestartHint }, t('common.gotIt')),
-        })
-
     return createElement(
         'div',
         { style: PAGE },
         renderHeader(t, updatePhase, () => setUpdatePhase('checking')),
-        renderBody(state, t, busy, applyPatch, retry, openFolderEnabled, toggleOpenFolder),
+        renderBody(state, t, busy, applyPatch, retry),
         notice === null
             ? null
             : createElement('div', { style: notice.kind === 'ok' ? NOTICE_OK : NOTICE_ERROR }, notice.text),
-        restartModal,
     )
 }
 
@@ -339,13 +321,17 @@ function renderHeader(t: PlatformTranslate, phase: UpdatePhase, onCheck: () => v
             },
             checkLabel(t, phase),
         ),
-        // GitHub 地址未定：禁用态 + 悬停说明为什么点不动。
         createElement(
             Button,
-            { variant: 'ghost', size: 'sm', disabled: true, title: t('header.githubUnset') },
+            { variant: 'ghost', size: 'sm', onClick: openGithub },
             t('header.github'),
         ),
     )
+}
+
+/** 点页头的 GitHub 按钮：在新标签页打开仓库首页（平台对 `_blank` 的处理与本仓一致）。 */
+function openGithub(): void {
+    window.open(GITHUB_URL, '_blank', 'noopener,noreferrer')
 }
 
 /**
@@ -371,8 +357,6 @@ function checkLabel(t: PlatformTranslate, phase: UpdatePhase): string {
  * @param busy - 是否有写回在飞。
  * @param onPatch - 配置补丁写回。
  * @param onRetry - 读取失败后的重试。
- * @param openFolderEnabled - 「打开文件夹」接管当前是否装载；null = 尚未读到。
- * @param onToggleOpenFolder - 装载 / 卸载「打开文件夹」接管。
  */
 function renderBody(
     state: LoadState,
@@ -380,8 +364,6 @@ function renderBody(
     busy: boolean,
     onPatch: (patch: Partial<HardenSettings>) => Promise<void>,
     onRetry: () => void,
-    openFolderEnabled: boolean | null,
-    onToggleOpenFolder: (next: boolean) => Promise<void>,
 ): ReactElement {
     if (state.status === 'loading') {
         return createElement('div', { style: HINT }, t('common.loading'))
@@ -415,6 +397,7 @@ function renderBody(
             },
         }),
         createElement(NetworkRetryCard, { settings: state.settings, t, busy, onPatch }),
+        createElement(CompactionCard, { settings: state.settings, t, busy, onPatch }),
         renderSwitchCard({
             title: t('rule.backgroundJobTool.title'),
             description: t('rule.backgroundJobTool.desc'),
@@ -424,12 +407,6 @@ function renderBody(
             onToggle: async (next) => {
                 await onPatch({ backgroundJobTool: next })
             },
-        }),
-        renderOpenFolderCard({
-            t,
-            enabled: openFolderEnabled,
-            busy,
-            onToggle: onToggleOpenFolder,
         }),
         createElement(SessionRepairCard, { t }),
     )
@@ -478,70 +455,6 @@ function renderSwitchCard(props: SwitchCardProps): ReactElement {
             }),
         ),
         createElement('div', { style: CARD_DESC }, props.description),
-    )
-}
-
-/** 「打开文件夹」接管卡片的渲染参数。 */
-interface OpenFolderCardProps {
-    t: PlatformTranslate
-    /** 当前是否已装载；null = 尚未读到。 */
-    enabled: boolean | null
-    busy: boolean
-    onToggle: (next: boolean) => Promise<void>
-}
-
-/**
- * 「打开文件夹」接管卡片：一行标题 + 问号说明 + 贴右的装载/卸载按钮，下面两行描述。
- *
- * 与其它卡片不同，这里不是一个持久化的配置开关，而是**运行时装载/卸载**
- * 同包第二个入口（`dsh-harden/open-folder`）：装载时由它接管 `/open-in-app/*`、
- * 同时把官方那行停掉；卸载时反过来，让官方启动器全部回来。
- *
- * @param props - 翻译函数、当前装载状态、忙碌标记与切换回调。
- */
-function renderOpenFolderCard(props: OpenFolderCardProps): ReactElement {
-    const loaded = props.enabled === true
-    const disabled = props.busy || props.enabled === null
-    const label = loaded ? props.t('rule.openFolder.unload') : props.t('rule.openFolder.load')
-
-    return createElement(
-        'section',
-        { style: CARD },
-        createElement(
-            'div',
-            { style: ROW },
-            createElement('span', { style: CARD_TITLE }, props.t('rule.openFolder.title')),
-            createElement(Tooltip, {
-                label: props.t('rule.openFolder.help'),
-                side: 'bottom',
-                children: createElement(
-                    'span',
-                    { style: HELP_ANCHOR },
-                    createElement(IconQuestionOutlineRegular, { size: 14 }),
-                ),
-            }),
-            createElement('span', { style: SPACER }),
-            createElement(
-                Button,
-                {
-                    variant: loaded ? 'outline' : 'primary',
-                    size: 'sm',
-                    disabled,
-                    onClick: () => void props.onToggle(!loaded),
-                },
-                label,
-            ),
-        ),
-        createElement('div', { style: CARD_DESC }, props.t('rule.openFolder.desc')),
-        createElement(
-            'div',
-            { style: CARD_DESC },
-            props.enabled === null
-                ? props.t('common.loading')
-                : loaded
-                    ? props.t('rule.openFolder.loaded')
-                    : props.t('rule.openFolder.unloaded'),
-        ),
     )
 }
 
@@ -654,7 +567,7 @@ interface ToolFailureCardProps {
  * 这里。草稿为 null 表示「跟随已保存值」，失焦时等于原值就不发请求。
  *
  * **为什么用原生 textarea。** 平台 primitives 没有多行输入组件，这里直接用原生元素，
- * 样式照 CARD / FIELD_BOX 的 token 用法。
+ * 样式照 CARD / TEXTAREA 的 token 用法。
  *
  * @param props - 已保存配置、翻译函数、写回忙碌标记与补丁写回入口。
  */
@@ -818,8 +731,189 @@ function NetworkRetryCard(props: NetworkRetryCardProps): ReactElement {
     )
 }
 
+/** 上下文自动压缩卡片的渲染参数。 */
+interface CompactionCardProps {
+    settings: HardenSettings
+    t: PlatformTranslate
+    busy: boolean
+    onPatch: (patch: Partial<HardenSettings>) => Promise<void>
+}
+
+/**
+ * 上下文自动压缩卡片：开关 + 触发阈值输入框 + 摘要指令多行框。
+ *
+ * **为什么是组件而不是渲染函数。** 阈值框与指令框各需要一份「正在编辑的草稿」，
+ * 而草稿是组件私有状态——普通渲染函数没法在内部调 hooks。做成独立组件后，
+ * 面板只管已保存的配置，草稿留在卡片自己这里。草稿为 null 表示「跟随已保存值」。
+ *
+ * **为什么用原生 textarea。** 平台 primitives 没有多行输入组件，这里直接用原生元素，
+ * 样式照 CARD / TEXTAREA 的 token 用法。
+ *
+ * @param props - 已保存配置、翻译函数、写回忙碌标记与补丁写回入口。
+ */
+function CompactionCard(props: CompactionCardProps): ReactElement {
+    const [thresholdDraft, setThresholdDraft] = useState<string | null>(null)
+    const [instructionDraft, setInstructionDraft] = useState<string | null>(null)
+    /** 压缩范围下拉（`Menu`）的展开态。 */
+    const [scopeMenuOpen, setScopeMenuOpen] = useState(false)
+
+    const thresholdText = thresholdDraft ?? props.settings.compactionThreshold
+    const instructionText = instructionDraft ?? props.settings.compactionInstruction
+
+    const thresholdInvalid = parseThresholdText(thresholdText) === null
+
+    /** 提交触发阈值：非法就丢弃，等于原值就不发请求。 */
+    async function commitThreshold(): Promise<void> {
+        if (thresholdDraft === null) return
+
+        setThresholdDraft(null)
+
+        if (parseThresholdText(thresholdDraft) === null) return
+        if (thresholdDraft === props.settings.compactionThreshold) return
+
+        await props.onPatch({ compactionThreshold: thresholdDraft })
+    }
+
+    /** 提交摘要指令：等于原值就不发请求。 */
+    async function commitInstruction(): Promise<void> {
+        if (instructionDraft === null) return
+
+        setInstructionDraft(null)
+
+        if (instructionDraft === props.settings.compactionInstruction) return
+
+        await props.onPatch({ compactionInstruction: instructionDraft })
+    }
+
+    /** 切换上下文自动压缩开关。 */
+    async function toggleCompaction(next: boolean): Promise<void> {
+        await props.onPatch({ contextCompaction: next })
+    }
+
+    /** 提交压缩范围：等于原值就不发请求。 */
+    async function commitCompactionScope(next: CompactionScope): Promise<void> {
+        if (next === props.settings.compactionScope) return
+
+        await props.onPatch({ compactionScope: next })
+    }
+
+    /** 多行框内容变更：只更新草稿，失焦时才提交。 */
+    function handleInstructionChange(event: ChangeEvent<HTMLTextAreaElement>): void {
+        setInstructionDraft(event.target.value)
+    }
+
+    const thresholdInput = createElement(Input, {
+        type: 'text',
+        value: thresholdText,
+        disabled: props.busy,
+        placeholder: props.t('field.compactionThreshold.placeholder'),
+        'aria-label': props.t('field.compactionThreshold.title'),
+        onChange: (event) => setThresholdDraft(event.target.value),
+        onBlur: commitThreshold,
+    })
+
+    const thresholdHint = thresholdInvalid
+        ? createElement('div', { style: NOTICE_ERROR }, props.t('field.compactionThreshold.invalid'))
+        : null
+
+    const instructionArea = createElement('textarea', {
+        style: TEXTAREA,
+        rows: 6,
+        value: instructionText,
+        disabled: props.busy,
+        placeholder: props.t('field.compactionInstruction.placeholder'),
+        'aria-label': props.t('field.compactionInstruction.title'),
+        onChange: handleInstructionChange,
+        onBlur: commitInstruction,
+    })
+
+    const scopeLabels: Record<CompactionScope, string> = {
+        all: props.t('field.compactionScope.optionAll'),
+        main: props.t('field.compactionScope.optionMain'),
+        subagent: props.t('field.compactionScope.optionSubagent'),
+    }
+
+    const scopeItems: MenuEntry[] = [
+        { id: 'all', label: scopeLabels.all },
+        { id: 'main', label: scopeLabels.main },
+        { id: 'subagent', label: scopeLabels.subagent },
+    ]
+
+    // 平台没有原生 select；下拉一律是「自绘锚点 + Menu」，锚点文字顶左、箭头贴右。
+    const scopeMenu = createElement(Menu, {
+        open: scopeMenuOpen,
+        anchor: createElement(
+            Button,
+            {
+                type: 'button',
+                variant: 'outline',
+                disabled: props.busy,
+                onClick: () => setScopeMenuOpen(!scopeMenuOpen),
+                style: MENU_ANCHOR,
+            },
+            [
+                createElement('span', { key: 'text', style: MENU_ANCHOR_TEXT }, scopeLabels[props.settings.compactionScope]),
+                createElement(
+                    'span',
+                    { key: 'caret', style: MENU_ANCHOR_CARET },
+                    createElement(
+                        scopeMenuOpen ? IconChevronUpOutlineRegular : IconChevronDownOutlineRegular,
+                        { size: 12 },
+                    ),
+                ),
+            ],
+        ),
+        items: scopeItems,
+        selectedId: props.settings.compactionScope,
+        onSelect: (id: string) => {
+            setScopeMenuOpen(false)
+            commitCompactionScope(id as CompactionScope)
+        },
+        onClose: () => setScopeMenuOpen(false),
+        side: 'bottom',
+        portal: true,
+    })
+
+    return createElement(
+        'section',
+        { style: CARD },
+        createElement(
+            'div',
+            { style: ROW },
+            createElement('span', { style: CARD_TITLE }, props.t('rule.contextCompaction.title')),
+            createElement(Tooltip, {
+                label: props.t('rule.contextCompaction.help'),
+                side: 'bottom',
+                children: createElement(
+                    'span',
+                    { style: HELP_ANCHOR },
+                    createElement(IconQuestionOutlineRegular, { size: 14 }),
+                ),
+            }),
+            createElement('span', { style: SPACER }),
+            createElement(Switch, {
+                checked: props.settings.contextCompaction,
+                onChange: toggleCompaction,
+                disabled: props.busy,
+                label: props.t('rule.contextCompaction.title'),
+            }),
+        ),
+        createElement('div', { style: CARD_DESC }, props.t('rule.contextCompaction.desc')),
+        renderFieldRow(props.t, 'field.compactionScope', scopeMenu),
+        renderFieldRow(props.t, 'field.compactionThreshold', thresholdInput),
+        thresholdHint,
+        createElement('div', { style: FIELD_LABEL }, props.t('field.compactionInstruction.title')),
+        instructionArea,
+        createElement('div', { style: CARD_DESC }, props.t('field.compactionInstruction.help')),
+    )
+}
+
 /**
  * 渲染一行带输入控件的设置项：左边标签 + 问号说明，右边贴控件。
+ *
+ * 标签与问号居左，控件槽**定宽**、由弹簧推到卡片右缘——几行右缘因此一律对齐（用户定稿：控件不撑满
+ * 整行）。**槽里用 grid 不用 flex**：平台 Input 的外壳是 span 且不吃外部宽度，flex 里从外面拉不满；
+ * grid item 默认 stretch，不看组件内部实现照样拉满。
  *
  * @param t - 翻译函数。
  * @param keyBase - 文案 key 前缀（`.title` / `.help` 由这里补）。
@@ -840,7 +934,7 @@ function renderFieldRow(t: PlatformTranslate, keyBase: string, control: ReactEle
             ),
         }),
         createElement('span', { style: SPACER }),
-        createElement('div', { style: FIELD_BOX }, control),
+        createElement('div', { style: FIELD_SLOT }, control),
     )
 }
 
@@ -901,8 +995,15 @@ const ROW: CSSProperties = { display: 'flex', alignItems: 'center', gap: '0.5em'
 /** 输入行左边那格标签。 */
 const FIELD_LABEL: CSSProperties = { color: 'var(--dsw-alias-label-secondary)' }
 
-/** 输入控件的定宽容器：平台 Input 是 span 包 input，宽度只能从外面给。 */
-const FIELD_BOX: CSSProperties = { width: '18em', maxWidth: '60%' }
+/** 字段行的控件槽：定宽（相对单位，随面板字号缩放），由弹簧推到卡片右缘；槽内用 grid 让平台控件撑满槽宽。 */
+const FIELD_SLOT: CSSProperties = {
+    flex: 'none',
+    width: '18em',
+    maxWidth: '60%',
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr)',
+    alignItems: 'center',
+}
 
 /** 多行输入框：平台 primitives 无多行组件，直接用原生 textarea，样式照 CARD 的 token 用法。 */
 const TEXTAREA: CSSProperties = {
@@ -923,6 +1024,30 @@ const HELP_ANCHOR: CSSProperties = {
     alignItems: 'center',
     color: 'var(--dsw-alias-label-tertiary)',
     cursor: 'help',
+}
+
+/** 下拉锚点按钮：文字顶左、箭头贴右，跟着容器撑满。 */
+const MENU_ANCHOR: CSSProperties = {
+    width: '100%',
+    boxSizing: 'border-box',
+    justifyContent: 'space-between',
+    gap: '0.45em',
+}
+
+/** 锚点里的文字：允许收缩并出省略号。 */
+const MENU_ANCHOR_TEXT: CSSProperties = {
+    display: 'block',
+    minWidth: '0',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+}
+
+/** 锚点尾部的箭头槽：图标只吃 size/className，包一层免得被文字压。 */
+const MENU_ANCHOR_CARET: CSSProperties = {
+    display: 'inline-flex',
+    flex: 'none',
+    color: 'var(--dsw-alias-label-tertiary)',
 }
 
 const HINT: CSSProperties = { color: 'var(--dsw-alias-label-secondary)' }

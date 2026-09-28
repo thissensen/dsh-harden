@@ -81,6 +81,41 @@ declare module '@deepseek-ai/dsh-llm' {
         constructor(message: string, code?: string, options?: { cause?: unknown })
         readonly code?: string
     }
+
+    /**
+     * 增量 chunk 组装器（压缩的摘要调用收集流式输出用）。
+     *
+     * 形状刻意宽松：只为「CI 上没有宿主包」时兜底；真实契约在平台源码里。
+     */
+    export class BlockAssembler {
+        push(chunk: unknown): void
+        blocks(): { type: string; text?: string; [key: string]: unknown }[]
+        readonly finish: { kind: string }
+        readonly usage: unknown
+    }
+
+    /** 构造一条带稳定身份与 source 的 user 消息（压缩的 checkpoint 用）。 */
+    export function createUserMessage(input: {
+        content: readonly unknown[]
+        source: unknown
+    }): unknown
+}
+
+declare module '@deepseek-ai/dsh-compaction' {
+    /** 一次压缩事务的稳定身份（官方为 branded string，构造器不做校验）。 */
+    export type CompactionId = string & { readonly __compactionIdBrand?: 'CompactionId' }
+    export function CompactionId(id: string): CompactionId
+
+    /** 压缩 checkpoint 的消息来源（替换会话历史那条 user/message 的 source）。 */
+    export interface CompactionCheckpointSource {
+        readonly kind: 'compact-checkpoint'
+        readonly compactionId: CompactionId
+        readonly sourceCommandId?: string
+    }
+    export function compactCheckpointSource(compactionId: CompactionId, sourceCommandId?: string): CompactionCheckpointSource
+
+    /** 切点是否落在工具调用对中间（落在中间就不能切）。 */
+    export function toolPairingBalancedBefore(session: unknown, seq: number): boolean
 }
 
 declare module '@deepseek-ai/dsh-sandbox' {

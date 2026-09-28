@@ -9,34 +9,7 @@
 #
 # 本地开发安装（把 <克隆目录> 换成这份源码所在的目录）：
 #   dsh plugin --profile desktop add link:<克隆目录>/dsh-harden
-#
-# ── 关掉平台 open-in-app 的 host 半边 ─────────────────────────────────────
-#
-# 原实现最终调用 @deepseek-ai/dsh-native-command 的 runNativeCommand，那里把
-# windowsHide 写死成 true，explorer 窗口创建了却不可见（2026-09-28 实测 A/B）。
-# 本插件自己 spawn explorer（windowsHide: false），并注册同名路由接管。
-#
-# webServer 的 (kind, path) 组合唯一：不先 disable 这一行，两个插件同时注册
-# /open-in-app/* 会直接抛错，让两边一起挂掉。
-#
-# 只关 host 半边（id: open-in-app）；client 半边（id: ui-open-in-app）保留——
-# 它只是向这几个路由发请求的按钮，我们提供了同样的接口。
-#
-# ── 两个入口与「打开文件夹」的装载/卸载 ──────────────────────────────────
-#
-# `open-in-app: disabled` 是静态的初始状态：webServer 的 (kind, path) 组合唯一，
-# 平台官方 host 行与本插件的 `harden-open-folder` 同时注册 /open-in-app/* 会抛错，
-# 所以初始只让后者活。
-#
-# 设置页卡片⑤ 装载/卸载「打开文件夹」时由平台 pluginManager 的 setPluginEnabled
-# 往 profile patch（user layer，后应用、last-write-wins）追加同 id 的 disabled 覆盖，
-# 运行时切换这两条 row —— 本文件不负责那一步。
-- id: open-in-app
-  disabled: true
 
 - insert:
     - id: harden
       name: 'dsh-harden'
-
-    - id: harden-open-folder
-      name: 'dsh-harden/open-folder'
