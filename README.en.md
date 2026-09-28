@@ -42,6 +42,21 @@ In one sentence: **an explicit failure is fine; a silent stop is not.**
 - **Open folder takeover** — fixes the platform bug where "Open with → Explorer" did nothing. Load/unload it any time from the settings page: while loaded only Explorer is offered; unload to bring every official launcher back.
 - **Unbounded and switchable** — no cap on injections, and every rule has its own toggle.
 - **Never touches your config or patches the platform** — switches live in the platform `settings`; it only listens to public events and patches no `@deepseek-ai/*` package.
+- **One-click repair of corrupted session logs** — when a session log gets corrupted and the platform refuses to open the history, the settings page scans and repairs it in one click.
+
+## Problem screenshots
+
+When a session log gets corrupted, the platform throws an error and the whole history becomes unopenable; the plugin scans and repairs it in one click from the settings page:
+
+<p align="center">
+  <img src="./assets/fix-session-corrupt.png" width="90%" alt="History load failed: stored session is corrupt">
+</p>
+
+When a tool call fails and gets swallowed, the plugin asks the model to retry, so the turn no longer ends for no reason:
+
+<p align="center">
+  <img src="./assets/fix-tool-call-retry.png" width="90%" alt="Tool call failed, the model has been asked to retry">
+</p>
 
 ## Screenshots
 

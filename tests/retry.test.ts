@@ -92,17 +92,17 @@ describe('takeRetrySlot', () => {
         const budgets = makeBudgets()
         const agent = {}
 
-        expect(takeRetrySlot(budgets, agent, 1, 3, 3)).toBe(1)
-        expect(takeRetrySlot(budgets, agent, 1, 3, 3)).toBe(2)
-        expect(takeRetrySlot(budgets, agent, 1, 3, 3)).toBe(3)
+        expect(takeRetrySlot(budgets, agent, 1, 3, 3)).toEqual({ count: 1, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 1, 3, 3)).toEqual({ count: 2, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 1, 3, 3)).toEqual({ count: 3, retryId: expect.any(String) })
     })
 
     it('用满上限后返回 null', () => {
         const budgets = makeBudgets()
         const agent = {}
 
-        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toBe(1)
-        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toBe(2)
+        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toEqual({ count: 1, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toEqual({ count: 2, retryId: expect.any(String) })
         expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toBeNull()
     })
 
@@ -116,19 +116,19 @@ describe('takeRetrySlot', () => {
         const budgets = makeBudgets()
         const agent = {}
 
-        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toBe(1)
-        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toBe(2)
+        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toEqual({ count: 1, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toEqual({ count: 2, retryId: expect.any(String) })
         expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toBeNull()
-        expect(takeRetrySlot(budgets, agent, 1, 4, 2)).toBe(1)
+        expect(takeRetrySlot(budgets, agent, 1, 4, 2)).toEqual({ count: 1, retryId: expect.any(String) })
     })
 
     it('回合号变化 = 名额重置', () => {
         const budgets = makeBudgets()
         const agent = {}
 
-        expect(takeRetrySlot(budgets, agent, 1, 3, 1)).toBe(1)
+        expect(takeRetrySlot(budgets, agent, 1, 3, 1)).toEqual({ count: 1, retryId: expect.any(String) })
         expect(takeRetrySlot(budgets, agent, 1, 3, 1)).toBeNull()
-        expect(takeRetrySlot(budgets, agent, 2, 3, 1)).toBe(1)
+        expect(takeRetrySlot(budgets, agent, 2, 3, 1)).toEqual({ count: 1, retryId: expect.any(String) })
     })
 
     it('不同 agent 的名额互不影响', () => {
@@ -136,9 +136,36 @@ describe('takeRetrySlot', () => {
         const agentA = {}
         const agentB = {}
 
-        expect(takeRetrySlot(budgets, agentA, 1, 3, 1)).toBe(1)
+        expect(takeRetrySlot(budgets, agentA, 1, 3, 1)).toEqual({ count: 1, retryId: expect.any(String) })
         expect(takeRetrySlot(budgets, agentA, 1, 3, 1)).toBeNull()
-        expect(takeRetrySlot(budgets, agentB, 1, 3, 1)).toBe(1)
+        expect(takeRetrySlot(budgets, agentB, 1, 3, 1)).toEqual({ count: 1, retryId: expect.any(String) })
+    })
+
+    it('同一 turn+step 内多次占用共用同一个 retryId', () => {
+        const budgets = makeBudgets()
+        const agent = {}
+
+        const firstSlot = takeRetrySlot(budgets, agent, 1, 3, 3)
+        const secondSlot = takeRetrySlot(budgets, agent, 1, 3, 3)
+        const thirdSlot = takeRetrySlot(budgets, agent, 1, 3, 3)
+
+        expect(firstSlot?.retryId).toEqual(expect.any(String))
+        expect(secondSlot?.retryId).toBe(firstSlot?.retryId)
+        expect(thirdSlot?.retryId).toBe(firstSlot?.retryId)
+    })
+
+    it('turn 或 step 变化 = 换链，retryId 变新', () => {
+        const budgets = makeBudgets()
+        const agent = {}
+
+        const slotOnStepThree = takeRetrySlot(budgets, agent, 1, 3, 5)
+        const slotOnStepFour = takeRetrySlot(budgets, agent, 1, 4, 5)
+        const slotOnTurnTwo = takeRetrySlot(budgets, agent, 2, 3, 5)
+
+        expect(slotOnStepThree?.retryId).toEqual(expect.any(String))
+        expect(slotOnStepFour?.retryId).not.toBe(slotOnStepThree?.retryId)
+        expect(slotOnTurnTwo?.retryId).not.toBe(slotOnStepThree?.retryId)
+        expect(slotOnTurnTwo?.retryId).not.toBe(slotOnStepFour?.retryId)
     })
 })
 
@@ -152,21 +179,21 @@ describe('buildRetryEvents', () => {
     }
 
     it('两条事件的类型与官方一致', () => {
-        const events = buildRetryEvents(payload, 1, 3)
+        const events = buildRetryEvents(payload, 'retry-id-1', 1, 3)
 
         expect(events.scheduledType).toBe('llm/retry')
         expect(events.startedType).toBe('llm/retry-started')
     })
 
     it('两条事件共享同一个非空 retryId', () => {
-        const events = buildRetryEvents(payload, 2, 5)
+        const events = buildRetryEvents(payload, 'retry-id-1', 2, 5)
 
         expect(events.scheduledData.retryId).toBe(events.startedData.retryId)
         expect(events.scheduledData.retryId).not.toBe('')
     })
 
     it('重试序号与上限如实带进事件（界面显示成 n/max）', () => {
-        const events = buildRetryEvents(payload, 2, 5)
+        const events = buildRetryEvents(payload, 'retry-id-1', 2, 5)
 
         expect(events.scheduledData.retry).toBe(2)
         expect(events.scheduledData.maxRetries).toBe(5)
@@ -174,13 +201,13 @@ describe('buildRetryEvents', () => {
     })
 
     it('delayMs 为 0：我们立即重试，没有等待', () => {
-        const events = buildRetryEvents(payload, 1, 3)
+        const events = buildRetryEvents(payload, 'retry-id-1', 1, 3)
 
         expect(events.scheduledData.delayMs).toBe(0)
     })
 
     it('坐标与失败事实原样带进事件', () => {
-        const events = buildRetryEvents(payload, 1, 3)
+        const events = buildRetryEvents(payload, 'retry-id-1', 1, 3)
 
         expect(events.scheduledData.turn).toBe(2)
         expect(events.scheduledData.step).toBe(5)
@@ -188,5 +215,13 @@ describe('buildRetryEvents', () => {
         expect(events.scheduledData.failure).toEqual(payload.failure)
         expect(events.startedData.turn).toBe(2)
         expect(events.startedData.step).toBe(5)
+    })
+
+    it('传入的 retryId 原样写进两条事件', () => {
+        const retryId = 'retry-id-7f3a'
+        const events = buildRetryEvents(payload, retryId, 2, 5)
+
+        expect(events.scheduledData.retryId).toBe(retryId)
+        expect(events.startedData.retryId).toBe(retryId)
     })
 })

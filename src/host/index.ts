@@ -320,21 +320,21 @@ function considerRetry(
     if (matchesRetryTokens(payload.failure, config.networkRetryTokens) === false) return officialDecision
 
     const agent = payload.agent as unknown as object
-    const retry = takeRetrySlot(
+    const slot = takeRetrySlot(
         state.retryBudgets,
         agent,
         payload.turn,
         payload.step,
         config.networkRetryCount,
     )
-    if (retry === null) return officialDecision
+    if (slot === null) return officialDecision
 
     logger.info?.(
         `[harden] 规则 H3 命中：turn=${payload.turn} step=${payload.step} provider=${payload.provider} ` +
-            `code=${payload.failure?.code ?? '-'}，兜底重试（第 ${retry} 次）`,
+            `code=${payload.failure?.code ?? '-'}，兜底重试（第 ${slot.count} 次）`,
     )
 
-    reportRetryToSession(payload, retry, config.networkRetryCount)
+    reportRetryToSession(payload, slot.retryId, slot.count, config.networkRetryCount)
 
     return { kind: 'retry' }
 }
@@ -346,18 +346,20 @@ function considerRetry(
  * 测试桩与老版本会话可能没有 `append`，缺失时照常重试，只是界面看不到那行提示。
  *
  * @param payload - `agent/request-error` 载荷。
+ * @param retryId - 本 policy chain 的重试 id（由 `takeRetrySlot` 分配，同链复用）。
  * @param retry - 这是第几次兜底重试（从 1 起）。
  * @param maxRetries - 兜底次数上限。
  */
 function reportRetryToSession(
     payload: RequestErrorPayload,
+    retryId: string,
     retry: number,
     maxRetries: number,
 ): void {
     const append = payload.agent.session?.append
     if (typeof append !== 'function') return
 
-    const events = buildRetryEvents(payload, retry, maxRetries)
+    const events = buildRetryEvents(payload, retryId, retry, maxRetries)
     append.call(payload.agent.session, events.scheduledType, events.scheduledData)
     append.call(payload.agent.session, events.startedType, events.startedData)
 }

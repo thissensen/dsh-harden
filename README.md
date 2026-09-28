@@ -28,6 +28,22 @@
 
 5. 创建对接pwsh的后台job工具，解决只使用gitbash无法创建超120秒的后台任务
 
+6. 一键修复异常会话日志
+
+## 问题截图
+
+会话日志被写坏后，平台会直接报错、整段历史再也打不开；插件在设置页提供一键扫描并修复：
+
+<p align="center">
+  <img src="./assets/fix-session-corrupt.png" width="90%" alt="历史加载失败：stored session is corrupt">
+</p>
+
+工具调用失败被吞时，插件自动提示模型重新发起，回合不会莫名结束：
+
+<p align="center">
+  <img src="./assets/fix-tool-call-retry.png" width="90%" alt="工具调用失败，已提示模型重新发起">
+</p>
+
 ## 插件截图
 
 <p align="center">

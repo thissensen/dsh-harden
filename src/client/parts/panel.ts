@@ -78,6 +78,9 @@ const CONFIG_ENDPOINT = '/api/dsh-harden/config'
 /** 「打开文件夹」接管端点：读装载状态、装载/卸载。 */
 const OPEN_FOLDER_ENDPOINT = '/api/dsh-harden/open-folder'
 
+/** 会话修复端点：扫描并修复全部会话文件。 */
+const REPAIR_ENDPOINT = '/api/dsh-harden/repair-sessions'
+
 /** 写围栏要求的自定义头：它让请求变成非简单请求，跨站页面伪造不出来。 */
 const MUTATION_HEADER = { 'x-dsh-harden': '1' }
 
@@ -385,7 +388,7 @@ function renderBody(
     }
 
     if (state.status === 'failed') {
-        // 失败原因可能是 host 的暗号，也可能是真正的网络错误原文——共享函数两��都认。
+        // 失败原因可能是 host 的暗号，也可能是真正的网络错误原文——共享函数两边都认。
         const shownMessage = translateHostText(t, state.message)
 
         return createElement(
@@ -428,6 +431,7 @@ function renderBody(
             busy,
             onToggle: onToggleOpenFolder,
         }),
+        createElement(SessionRepairCard, { t }),
     )
 }
 
@@ -538,6 +542,99 @@ function renderOpenFolderCard(props: OpenFolderCardProps): ReactElement {
                     ? props.t('rule.openFolder.loaded')
                     : props.t('rule.openFolder.unloaded'),
         ),
+    )
+}
+
+/** 「修复损坏会话」卡片的渲染参数。 */
+interface SessionRepairCardProps {
+    t: PlatformTranslate
+}
+
+/** 一次修复的汇总（卡片内展示）。 */
+interface RepairSummary {
+    总数: number
+    已修复数: number
+    跳过数: number
+}
+
+/**
+ * 「修复损坏会话」卡片：标题 + 问号说明 + 贴右的修复按钮，下面一行描述与结果汇总。
+ *
+ * **为什么是独立组件。** 修复动作有自己的忙碌态与结果，与配置写回的全局 busy 互不相干；
+ * 状态留在卡片自己这里，面板不必为它扩参。
+ *
+ * @param props - 翻译函数。
+ */
+function SessionRepairCard(props: SessionRepairCardProps): ReactElement {
+    const [busy, setBusy] = useState(false)
+    const [summary, setSummary] = useState<RepairSummary | null>(null)
+    const [failureText, setFailureText] = useState<string | null>(null)
+
+    /** 点「一键扫描并修复」：POST 端点，成功后把汇总摊在卡片里。 */
+    async function 修复Btn_Click(): Promise<void> {
+        if (busy) return
+
+        setBusy(true)
+        setSummary(null)
+        setFailureText(null)
+
+        try {
+            const data = await postJson(REPAIR_ENDPOINT, {})
+            const 总数 = Number(data.总数)
+            const 已修复数 = Number(data.已修复数)
+            setSummary({ 总数, 已修复数, 跳过数: 总数 - 已修复数 })
+
+        } catch (error) {
+            setFailureText(messageOf(error))
+
+        } finally {
+            setBusy(false)
+        }
+    }
+
+    const summaryLine = summary === null
+        ? null
+        : createElement(
+            'div',
+            { style: CARD_DESC },
+            props.t('repair.done', { p1: summary.总数, p2: summary.已修复数, p3: summary.跳过数 }),
+        )
+
+    const failureLine = failureText === null
+        ? null
+        : createElement('div', { style: NOTICE_ERROR }, `${props.t('repair.failed')}：${translateHostText(props.t, failureText)}`)
+
+    return createElement(
+        'section',
+        { style: CARD },
+        createElement(
+            'div',
+            { style: ROW },
+            createElement('span', { style: CARD_TITLE }, props.t('repair.title')),
+            createElement(Tooltip, {
+                label: props.t('repair.help'),
+                side: 'bottom',
+                children: createElement(
+                    'span',
+                    { style: HELP_ANCHOR },
+                    createElement(IconQuestionOutlineRegular, { size: 14 }),
+                ),
+            }),
+            createElement('span', { style: SPACER }),
+            createElement(
+                Button,
+                {
+                    variant: 'primary',
+                    size: 'sm',
+                    disabled: busy,
+                    onClick: () => void 修复Btn_Click(),
+                },
+                busy ? props.t('repair.running') : props.t('repair.button'),
+            ),
+        ),
+        createElement('div', { style: CARD_DESC }, props.t('repair.desc')),
+        summaryLine,
+        failureLine,
     )
 }
 

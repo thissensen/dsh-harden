@@ -74,6 +74,7 @@ export const zh = {
     'api.openFolderEnabledNotBoolean': 'enabled 必须是布尔值',
     'api.openFolderRowMissing': '找不到「打开文件夹」相关插件行',
     'api.openFolderToggleFailed': '切换失败：{p1}',
+    'api.repairScanFailed': '扫描会话目录失败：{p1}',
 
     'rule.backgroundJobTool.title': '后台任务工具',
     'rule.backgroundJobTool.desc': '创建工具对接 pwsh，让模型能把长命令丢到后台跑，不占住当前回合',
@@ -93,6 +94,15 @@ export const zh = {
     'openFolder.restartUnloadDesc': '已卸载「打开文件夹」接管。请重启 DSH 桌面端，官方启动器才会恢复。',
 
     'panel.settingsNotReady': '设置服务未就绪',
+
+    'repair.title': '修复损坏会话',
+    'repair.desc': '扫描全部会话文件，修复已知的两类损坏，让打不开的会话重新可用',
+    'repair.help':
+        '会话文件有两类已知损坏会让平台整份拒读：重试编号不一致、事件序号用了范围编码。点一下扫描全部会话文件，能修的当场修好，正在使用中的会话文件会被跳过、不做改动。',
+    'repair.button': '一键扫描并修复',
+    'repair.running': '正在扫描并修复…',
+    'repair.done': '扫描 {p1} 个会话：已修复 {p2} 个，跳过 {p3} 个',
+    'repair.failed': '修复失败',
 
     'common.loading': '正在读取配置…',
     'common.failed': '读取失败',
@@ -167,6 +177,7 @@ export const en: Record<CopyKey, string> = {
     'api.openFolderEnabledNotBoolean': 'enabled must be a boolean',
     'api.openFolderRowMissing': 'Could not find the "open folder" plugin rows',
     'api.openFolderToggleFailed': 'Toggle failed: {p1}',
+    'api.repairScanFailed': 'Failed to scan the sessions directory: {p1}',
 
     'rule.backgroundJobTool.title': 'Background task tool',
     'rule.backgroundJobTool.desc': 'Creates a tool wired to pwsh, letting the model run long commands in the background without blocking the turn',
@@ -186,6 +197,15 @@ export const en: Record<CopyKey, string> = {
     'openFolder.restartUnloadDesc': 'The folder-opening takeover is now unloaded. Restart the DSH desktop app to bring the official launchers back.',
 
     'panel.settingsNotReady': 'Settings service is not ready',
+
+    'repair.title': 'Repair broken sessions',
+    'repair.desc': 'Scans every session file and repairs the two known kinds of damage so unreadable sessions work again',
+    'repair.help':
+        'Two known kinds of damage make the platform reject a whole session file: mismatched retry ids and event sequence ranges. One click scans every session file, repairs what it can, and skips files that are currently in use without touching them.',
+    'repair.button': 'Scan and repair',
+    'repair.running': 'Scanning and repairing…',
+    'repair.done': 'Scanned {p1} sessions: repaired {p2}, skipped {p3}',
+    'repair.failed': 'Repair failed',
 
     'common.loading': 'Reading configuration…',
     'common.failed': 'Failed to load',

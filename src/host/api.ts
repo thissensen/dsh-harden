@@ -12,8 +12,11 @@
  * @module dsh-harden/api
  */
 
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
+import { repairSessionFile, scanSessionFiles } from './session-repair.js'
 import type { Ctx, HardenConfig, Logger, PluginManagerService, WebServerService } from './types.js'
 
 /** 本插件的路由前缀。 */
@@ -35,6 +38,9 @@ const OPEN_FOLDER_MODULE_NAME = 'dsh-harden/open-folder'
 
 /** 平台官方「打开方式」host 行的模块名（与它成对切换）。 */
 const OPEN_IN_APP_MODULE_NAME = '@deepseek-ai/dsh-host-open-in-app'
+
+/** 会话仓库目录名（DSH_HOME 下面那一层）。 */
+const SESSIONS_DIR_NAME = 'sessions'
 
 /** 围栏的拒绝结果（通过时返回 null）。 */
 export interface GuardReject {
@@ -453,6 +459,88 @@ async function handlePostOpenFolder(req: IncomingMessage, res: ServerResponse, d
     json(res, 200, { ok: true, enabled })
 }
 
+/** 会话修复明细组里的一行。 */
+interface SessionRepairDetail {
+    filePath: string
+    status: string
+    reason: string
+}
+
+/**
+ * `POST /repair-sessions`：扫描并修复全部会话文件。
+ *
+ * **为什么顺序 await。** 每个文件都要读、改、写临时文件再 rename；并发处理会同时占住
+ * 大量文件句柄，而会话目录里几百个文件很常见，逐个走更稳。
+ *
+ * **为什么活跃文件不会被硬改。** 平台正占用中的会话文件 readFile / rename 会失败，
+ * repairSessionFile 如实报 read-failed——这里只统计，不重试、不绕路。
+ *
+ * @param req - Node 的请求对象。
+ * @param res - Node 的响应对象。
+ * @param deps - 取值依赖。
+ */
+async function handleRepairSessions(req: IncomingMessage, res: ServerResponse, deps: ApiDeps): Promise<void> {
+    const requestError = validateMutationRequest(req, deps.trustedHosts ?? [])
+    if (requestError !== null) {
+        json(res, requestError.statusCode, { ok: false, error: requestError.error })
+        return
+    }
+
+    try {
+        await readJsonBody(req)
+
+    } catch (error) {
+        const statusCode = (error as { statusCode?: number }).statusCode ?? 400
+        json(res, statusCode, { ok: false, error: `api.bodyReadFailed|${escapeArg(errText(error))}` })
+        return
+    }
+
+    const 会话根目录 = join(process.env.DSH_HOME ?? join(homedir(), '.dsh'), SESSIONS_DIR_NAME)
+
+    let 文件组: string[]
+    try {
+        文件组 = await scanSessionFiles(会话根目录)
+
+    } catch (error) {
+        json(res, 400, { ok: false, error: `api.repairScanFailed|${escapeArg(errText(error))}` })
+        return
+    }
+
+    const 明细组: SessionRepairDetail[] = []
+    let 通过数 = 0
+    let 已修复数 = 0
+    let 修不了数 = 0
+    let 读取失败数 = 0
+
+    for (const 文件路径 of 文件组) {
+        const 结果 = await repairSessionFile(文件路径)
+        明细组.push({ filePath: 结果.filePath, status: 结果.status, reason: 结果.reason })
+
+        if (结果.status === 'intact') {
+            通过数 += 1
+
+        } else if (结果.status === 'repaired') {
+            已修复数 += 1
+
+        } else if (结果.status === 'unrepairable') {
+            修不了数 += 1
+
+        } else {
+            读取失败数 += 1
+        }
+    }
+
+    json(res, 200, {
+        ok: true,
+        总数: 文件组.length,
+        通过数,
+        已修复数,
+        修不了数,
+        读取失败数,
+        明细组,
+    })
+}
+
 /**
  * 挂上本插件的 HTTP 路由。
  *
@@ -503,6 +591,11 @@ export function mountApi(ctx: Ctx, logger: Logger, deps: ApiDeps): void {
 
             if (req.method === 'POST' && path === `${API_PREFIX}/open-folder`) {
                 await handlePostOpenFolder(req, res, deps)
+                return
+            }
+
+            if (req.method === 'POST' && path === `${API_PREFIX}/repair-sessions`) {
+                await handleRepairSessions(req, res, deps)
                 return
             }
 

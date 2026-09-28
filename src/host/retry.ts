@@ -16,11 +16,12 @@ import { randomUUID } from 'node:crypto'
 
 import type { LlmFailureLike } from './types.js'
 
-/** 一个 agent 在一个 `turn/step` 上已经兜底重试了几次。 */
+/** 一个 agent 在一个 `turn/step` 上已经兜底重试了几次，以及本链的重试 id。 */
 export interface RetryBudget {
     turn: number
     step: number
     count: number
+    retryId: string
 }
 
 /**
@@ -63,17 +64,17 @@ const FALLBACK_POLICY_KEY = '["harden-fallback"]'
  * 我们确实没有等待，填 0 最如实。
  *
  * @param payload - `agent/request-error` 载荷里本插件要用的字段。
+ * @param retryId - 本 policy chain 的重试 id（同链复用，由 `takeRetrySlot` 分配）。
  * @param retry - 这是第几次兜底重试（从 1 起）。
  * @param maxRetries - 兜底次数上限（界面显示成 `{retry}/{maxRetries}`）。
  * @returns 两条事件的类型与数据。
  */
 export function buildRetryEvents(
     payload: { turn: number; step: number; provider: string; failure: LlmFailureLike },
+    retryId: string,
     retry: number,
     maxRetries: number,
 ): { scheduledType: string; scheduledData: RetryEventData; startedType: string; startedData: RetryStartedEventData } {
-    const retryId = randomUUID()
-
     return {
         scheduledType: 'llm/retry',
         scheduledData: {
@@ -122,12 +123,16 @@ export function matchesRetryTokens(failure: LlmFailureLike, tokens: string): boo
  * 坐标一变（新一步/新回合）计数自动清零。**只增不删**——WeakMap 的 key 是 agent
  * 对象本身，agent 回收时记录随之消失，不需要手工清理。
  *
+ * **同链共用一个 retryId。** 平台校验要求同一 policy chain（turn+step+provider+policyKey）
+ * 内的 retry 事件复用同一个 retryId，新链的 retryId 必须全局未出现过。所以「链是否变化」
+ * 的判据只在这里写一份：链内复用，换链重新生成。
+ *
  * @param budgets - 每个 agent 的兜底重试记账。
  * @param agent - agent 对象（WeakMap 的 key）。
  * @param turn - 当前回合。
  * @param step - 当前步号。
  * @param limit - 用户配置的兜底次数上限。
- * @returns 还有名额时返回这是第几次（从 1 起）；已用尽返回 null。
+ * @returns 还有名额时返回本链的 retryId 与这是第几次（从 1 起）；已用尽返回 null。
  */
 export function takeRetrySlot(
     budgets: WeakMap<object, RetryBudget>,
@@ -135,15 +140,16 @@ export function takeRetrySlot(
     turn: number,
     step: number,
     limit: number,
-): number | null {
+): { count: number; retryId: string } | null {
     const previous = budgets.get(agent)
     const isSameStep = previous !== undefined && previous.turn === turn && previous.step === step
     const count = isSameStep ? previous.count + 1 : 1
 
     if (count > limit) return null
 
-    budgets.set(agent, { turn, step, count })
-    return count
+    const retryId = isSameStep ? previous.retryId : randomUUID()
+    budgets.set(agent, { turn, step, count, retryId })
+    return { count, retryId }
 }
 
 /** 把逗号分隔的清单切成去空白的条目组。 */
