@@ -15,7 +15,6 @@ import {
     DEFAULT_EMPTY_OUTPUT_GUARD,
     DEFAULT_NETWORK_RETRY_COUNT,
     DEFAULT_NETWORK_RETRY_TOKENS,
-    DEFAULT_OPEN_FOLDER_VISIBLE,
     DEFAULT_TOOL_FAILURE_GUARD,
     DEFAULT_TOOL_FAILURE_PREFIXES,
     defaultConfig,
@@ -23,16 +22,19 @@ import {
 } from '../src/host/config.js'
 
 describe('配置层默认值', () => {
-    it('DEFAULT_OPEN_FOLDER_VISIBLE 是 true', () => {
-        expect(DEFAULT_OPEN_FOLDER_VISIBLE).toBe(true)
+    it('readConfig 忽略已移除的 openFolderVisible 字段', () => {
+        expect(Object.hasOwn(readConfig({ openFolderVisible: false }), 'openFolderVisible')).toBe(false)
     })
 
-    it('defaultConfig() 的 openFolderVisible 是 true', () => {
-        expect(defaultConfig().openFolderVisible).toBe(true)
+    it('defaultConfig() 不含已移除的 openFolderVisible', () => {
+        expect(Object.hasOwn(defaultConfig(), 'openFolderVisible')).toBe(false)
     })
 
-    it('readConfig({}) 的 openFolderVisible 是 true', () => {
-        expect(readConfig({}).openFolderVisible).toBe(true)
+    it('readConfig 只回落缺失字段，保留已有字段', () => {
+        const config = readConfig({ toolFailureGuard: false })
+
+        expect(config.toolFailureGuard).toBe(false)
+        expect(config.emptyOutputGuard).toBe(DEFAULT_EMPTY_OUTPUT_GUARD)
     })
 
     it('readConfig 对非对象输入回落到全默认配置', () => {
@@ -41,13 +43,13 @@ describe('配置层默认值', () => {
     })
 
     it('readConfig 解包 volatile 引用后取到真实值', () => {
-        const raw = { openFolderVisible: { get: () => false } }
-        expect(readConfig(raw).openFolderVisible).toBe(false)
+        const raw = { networkRetryCount: { get: () => 7 } }
+        expect(readConfig(raw).networkRetryCount).toBe(7)
     })
 
     it('readConfig 对类型不符的字段回落到默认值', () => {
-        const raw = { openFolderVisible: 'yes' }
-        expect(readConfig(raw).openFolderVisible).toBe(DEFAULT_OPEN_FOLDER_VISIBLE)
+        const raw = { networkRetryCount: 'yes' }
+        expect(readConfig(raw).networkRetryCount).toBe(DEFAULT_NETWORK_RETRY_COUNT)
     })
 
     it('全默认配置的每个字段都与导出的默认常量一致', () => {
@@ -59,6 +61,5 @@ describe('配置层默认值', () => {
         expect(config.networkRetryCount).toBe(DEFAULT_NETWORK_RETRY_COUNT)
         expect(config.networkRetryTokens).toBe(DEFAULT_NETWORK_RETRY_TOKENS)
         expect(config.backgroundJobTool).toBe(DEFAULT_BACKGROUND_JOB_TOOL)
-        expect(config.openFolderVisible).toBe(DEFAULT_OPEN_FOLDER_VISIBLE)
     })
 })

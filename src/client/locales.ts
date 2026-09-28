@@ -71,16 +71,26 @@ export const zh = {
     'api.networkRetryTokensInvalid': 'networkRetryTokens 必须是不超过 200 字的字符串',
     'api.toolFailurePrefixesInvalid': 'toolFailurePrefixes 必须是不超过 2000 字的字符串',
     'api.backgroundJobToolNotBoolean': 'backgroundJobTool 必须是布尔值',
-    'api.openFolderVisibleNotBoolean': 'openFolderVisible 必须是布尔值',
+    'api.openFolderEnabledNotBoolean': 'enabled 必须是布尔值',
+    'api.openFolderRowMissing': '找不到「打开文件夹」相关插件行',
+    'api.openFolderToggleFailed': '切换失败：{p1}',
 
     'rule.backgroundJobTool.title': '后台任务工具',
     'rule.backgroundJobTool.desc': '创建工具对接 pwsh，让模型能把长命令丢到后台跑，不占住当前回合',
     'rule.backgroundJobTool.help':
         '开启后，模型可以用 job_background 工具起后台命令，再用 job_list / job_output / job_kill 查看和停止。关闭后该工具从工具表里消失。',
 
-    'rule.openFolderVisible.title': '打开文件夹窗口可见',
-    'rule.openFolderVisible.desc': '修复原本资源管理器点击无效BUG',
-    'rule.openFolderVisible.help': '开启时，点「打开方式 → 资源管理器」会弹出窗口（插件已修好平台原版的窗口不可见问题）。关闭后窗口不会弹出来，等同平台原版行为。',
+    'rule.openFolder.title': '打开文件夹接管',
+    'rule.openFolder.desc': '让「打开方式 → 资源管理器」真正弹出窗口',
+    'rule.openFolder.help':
+        '装载后由本插件接管打开文件夹，点「打开方式 → 资源管理器」会弹出窗口（插件已修好平台原版的窗口不可见问题）。代价：接管期间官方那批启动器（VS Code、Cursor、Git Bash、Windows Terminal 等）不可用。卸载后官方启动器全部恢复。',
+    'rule.openFolder.load': '装载',
+    'rule.openFolder.unload': '卸载',
+    'rule.openFolder.loaded': '已装载：本插件接管中，官方启动器暂不可用',
+    'rule.openFolder.unloaded': '未装载：官方启动器可用',
+    'openFolder.restartTitle': '需要重启 DSH',
+    'openFolder.restartLoadDesc': '已装载「打开文件夹」接管。请重启 DSH 桌面端，改动才会生效。',
+    'openFolder.restartUnloadDesc': '已卸载「打开文件夹」接管。请重启 DSH 桌面端，官方启动器才会恢复。',
 
     'panel.settingsNotReady': '设置服务未就绪',
 
@@ -89,6 +99,8 @@ export const zh = {
     'common.retry': '重试',
     'common.saved': '已保存',
     'common.saveFailed': '保存失败',
+    'common.gotIt': '知道了',
+    'common.close': '关闭',
 } as const
 
 /** 本字典的 key 集合。 */
@@ -152,16 +164,26 @@ export const en: Record<CopyKey, string> = {
     'api.networkRetryTokensInvalid': 'networkRetryTokens must be a string of at most 200 characters',
     'api.toolFailurePrefixesInvalid': 'toolFailurePrefixes must be a string of at most 2000 characters',
     'api.backgroundJobToolNotBoolean': 'backgroundJobTool must be a boolean',
-    'api.openFolderVisibleNotBoolean': 'openFolderVisible must be a boolean',
+    'api.openFolderEnabledNotBoolean': 'enabled must be a boolean',
+    'api.openFolderRowMissing': 'Could not find the "open folder" plugin rows',
+    'api.openFolderToggleFailed': 'Toggle failed: {p1}',
 
     'rule.backgroundJobTool.title': 'Background task tool',
     'rule.backgroundJobTool.desc': 'Creates a tool wired to pwsh, letting the model run long commands in the background without blocking the turn',
     'rule.backgroundJobTool.help':
         'When on, the model can start background commands with the job_background tool and manage them with job_list / job_output / job_kill. When off, the tool disappears from the tool list.',
 
-    'rule.openFolderVisible.title': 'Explorer window visible when opening a folder',
-    'rule.openFolderVisible.desc': 'Fixes the bug where clicking to open the Explorer did nothing.',
-    'rule.openFolderVisible.help': 'When on, clicking "Open with → Explorer" pops up a window (the plugin fixes the invisible-window bug of the platform original). When off, no window pops up, matching the platform original behavior.',
+    'rule.openFolder.title': 'Take over opening folders',
+    'rule.openFolder.desc': 'Makes "Open with → Explorer" actually pop up a window',
+    'rule.openFolder.help':
+        'When loaded, the plugin takes over opening folders, so "Open with → Explorer" pops up a window (the plugin fixes the invisible-window bug of the platform original). Trade-off: while loaded, the official launchers (VS Code, Cursor, Git Bash, Windows Terminal, etc.) are unavailable. Unload to bring every official launcher back.',
+    'rule.openFolder.load': 'Load',
+    'rule.openFolder.unload': 'Unload',
+    'rule.openFolder.loaded': 'Loaded: the plugin is taking over; official launchers are unavailable',
+    'rule.openFolder.unloaded': 'Not loaded: official launchers are available',
+    'openFolder.restartTitle': 'Restart DSH to apply',
+    'openFolder.restartLoadDesc': 'The folder-opening takeover is now loaded. Restart the DSH desktop app for it to take effect.',
+    'openFolder.restartUnloadDesc': 'The folder-opening takeover is now unloaded. Restart the DSH desktop app to bring the official launchers back.',
 
     'panel.settingsNotReady': 'Settings service is not ready',
 
@@ -170,6 +192,8 @@ export const en: Record<CopyKey, string> = {
     'common.retry': 'Retry',
     'common.saved': 'Saved',
     'common.saveFailed': 'Save failed',
+    'common.gotIt': 'Got it',
+    'common.close': 'Close',
 }
 
 /**

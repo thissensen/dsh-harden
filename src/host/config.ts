@@ -50,9 +50,6 @@ export const DEFAULT_NETWORK_RETRY_TOKENS = 'SERVER,RATE_LIMIT,TIMEOUT,TRANSPORT
 /** 默认值：工具 `job_background`（把命令放后台 job 执行）的开关。默认**开**。 */
 export const DEFAULT_BACKGROUND_JOB_TOOL = true
 
-/** 默认值：点「打开方式 → 资源管理器」时窗口是否可见。默认**可见**（= 插件修好的行为）。 */
-export const DEFAULT_OPEN_FOLDER_VISIBLE = true
-
 /** 平台按这个名字认配置 schema（`Config = { … }` 是平台侧的约定名）。 */
 export const Config = z.object({
     toolFailureGuard: z.boolean().default(DEFAULT_TOOL_FAILURE_GUARD).volatile(),
@@ -61,7 +58,6 @@ export const Config = z.object({
     networkRetryCount: z.number().default(DEFAULT_NETWORK_RETRY_COUNT).volatile(),
     networkRetryTokens: z.string().default(DEFAULT_NETWORK_RETRY_TOKENS).volatile(),
     backgroundJobTool: z.boolean().default(DEFAULT_BACKGROUND_JOB_TOOL).volatile(),
-    openFolderVisible: z.boolean().default(DEFAULT_OPEN_FOLDER_VISIBLE).volatile(),
 })
 
 /**
@@ -84,7 +80,6 @@ export function readConfig(raw: unknown): Required<HardenConfig> {
         networkRetryCount: unwrapField(obj.networkRetryCount, DEFAULT_NETWORK_RETRY_COUNT, 'number'),
         networkRetryTokens: unwrapField(obj.networkRetryTokens, DEFAULT_NETWORK_RETRY_TOKENS, 'string'),
         backgroundJobTool: unwrapField(obj.backgroundJobTool, DEFAULT_BACKGROUND_JOB_TOOL, 'boolean'),
-        openFolderVisible: unwrapField(obj.openFolderVisible, DEFAULT_OPEN_FOLDER_VISIBLE, 'boolean'),
     }
 }
 
@@ -97,7 +92,6 @@ export function defaultConfig(): Required<HardenConfig> {
         networkRetryCount: DEFAULT_NETWORK_RETRY_COUNT,
         networkRetryTokens: DEFAULT_NETWORK_RETRY_TOKENS,
         backgroundJobTool: DEFAULT_BACKGROUND_JOB_TOOL,
-        openFolderVisible: DEFAULT_OPEN_FOLDER_VISIBLE,
     }
 }
 

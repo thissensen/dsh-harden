@@ -24,6 +24,7 @@ import { createRequire } from 'node:module'
 import type {
     Ctx,
     Logger,
+    PluginManagerService,
     RequestErrorAction,
     RequestErrorPayload,
     TurnStoppingPayload,
@@ -38,7 +39,6 @@ import {
 import { buildRetryEvents, matchesRetryTokens, takeRetrySlot, type RetryBudget } from './retry.js'
 import { mountApi } from './api.js'
 import type { ConfigScope } from './api.js'
-import { mountOpenFolderFix } from './open-folder.js'
 import { mountJobBackground } from './job-background.js'
 import { SETTINGS_NAMESPACE } from './config.js'
 
@@ -94,10 +94,9 @@ export function apply(ctx: Ctx, config: unknown): void {
 }
 
 /**
- * 挂设置页的配置通路，并顺手挂上「打开文件夹」路由。
+ * 挂设置页的配置通路。
  *
- * 两者都需要 `webServer`，且「打开文件夹」还要拿 `webRuntime.trustedHosts` 当围栏，
- * 所以合在同一个注入回调里，避免把 `ctx.inject` 写两遍。
+ * 「打开文件夹」已拆到同包第二个入口（`harden-open-folder`），不在这里挂。
  *
  * **为什么用注入回调而不是顶层声明。** `settings` 与 `webServer` 由别的插件提供，
  * 就绪时机与本插件的 `apply` 先后顺序不作保证；等它们都到齐了再建作用域、再注册路由，
@@ -127,8 +126,14 @@ function mountConfigApi(ctx: Ctx, logger: Logger, config: unknown): void {
         const webRuntime = (webCtx as unknown as { webRuntime?: { trustedHosts?: unknown } }).webRuntime
         const trustedHosts = Array.isArray(webRuntime?.trustedHosts) ? (webRuntime?.trustedHosts as string[]) : []
 
-        mountApi(webCtx, logger, { getScope: () => scope, trustedHosts })
-        mountOpenFolderFix(webCtx, logger, trustedHosts, () => readConfig(config).openFolderVisible)
+        mountApi(webCtx, logger, {
+            getScope: () => scope,
+            trustedHosts,
+            // 用 ctx.get 而不是 ctx.pluginManager：cordis 的属性访问要求该服务在
+            // inject 列表里声明过，否则直接抛「cannot get property ... without inject」。
+            // 本回调只 inject 了 webServer/webRuntime/settings，故改走查询语义。
+            getPluginManager: () => webCtx.get?.<PluginManagerService>('pluginManager'),
+        })
     })
 }
 

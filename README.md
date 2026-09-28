@@ -1,6 +1,13 @@
 # dsh-harden
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/dsh-harden"><img src="https://img.shields.io/npm/v/dsh-harden?logo=npm&logoColor=white&color=cb3837" alt="npm version"></a>
+  <a href="https://github.com/thissensen/dsh-harden/actions/workflows/ci.yml"><img src="https://github.com/thissensen/dsh-harden/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/thissensen/dsh-harden/releases"><img src="https://img.shields.io/github/v/release/thissensen/dsh-harden?color=blue&logo=github" alt="Release"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/thissensen/dsh-harden?color=3da639" alt="license"></a>
+</p>
+
+<p align="center">
   <b>DSH 运行时看护层 —— 让任何一次停止都有明确原因</b>
 </p>
 
@@ -17,7 +24,7 @@
 
 3. 第三方API经常出现的：只输出思考直接中断，插件会自动重试
 
-4. 修复打开资源管理器无反应的BUG
+4. 修复打开资源管理器无反应的BUG（设置页可随时装载/卸载接管，装载时只有资源管理器、卸载后官方启动器全回来）
 
 5. 创建对接pwsh的后台job工具，解决只使用gitbash无法创建超120秒的后台任务
 

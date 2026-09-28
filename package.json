@@ -1,6 +1,6 @@
 {
   "name": "dsh-harden",
-  "version": "0.0.1-preview.1",
+  "version": "0.0.1-preview.2",
   "license": "MIT",
   "type": "module",
   "description": "DSH 运行时看护层：在 agent 生命周期的关键点做防护，保证任何停止都有明确原因，不让异常静默变成正常结束。",
@@ -23,6 +23,7 @@
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./open-folder": "./lib/open-folder-entry.js",
     "./client": "./client/index.js",
     "./package.json": "./package.json"
   },

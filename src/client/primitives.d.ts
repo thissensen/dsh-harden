@@ -13,7 +13,7 @@
  */
 
 declare module '@deepseek-ai/dsh-client-ui-primitives' {
-    import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactElement, ReactNode } from 'react'
+    import type { ButtonHTMLAttributes, InputHTMLAttributes, KeyboardEventHandler, ReactElement, ReactNode } from 'react'
 
     /** 按钮：`icon` 是可选的行首图标节点；其余原生 button 属性透传。 */
     export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -51,6 +51,30 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
     export const IconShieldOutlineRegular: (props: IconProps) => ReactElement
     export const IconQuestionOutlineRegular: (props: IconProps) => ReactElement
     export const IconRefreshOutlineRegular: (props: IconProps) => ReactElement
+
+    /**
+     * 居中对话框（portal 到 body）。
+     *
+     * 非 headless 模式渲染默认头部与关闭按钮，此时 closeLabel 必填（无障碍名）；
+     * headless: true 时头部整块由调用方自绘，closeLabel 不再需要。
+     */
+    export type ModalProps = {
+        open: boolean
+        onClose: () => void
+        title: string
+        description?: string
+        children?: ReactNode
+        footer?: ReactNode
+        className?: string
+        contentClassName?: string
+        onKeyDownCapture?: KeyboardEventHandler<HTMLDivElement>
+        backdropBlur?: boolean
+        shortcutModal?: string
+    } & (
+        | { headless: true; closeLabel?: never }
+        | { headless?: false; closeLabel: string }
+    )
+    export const Modal: (props: ModalProps) => ReactElement | null
 
     /** 悬停提示：把气泡挂在单个锚点元素上（锚点自己的事件会被链在提示的处理器之后）。 */
     export interface TooltipProps {

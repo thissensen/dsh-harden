@@ -22,6 +22,7 @@ import {
     IconRefreshOutlineRegular,
     IconShieldOutlineRegular,
     Input,
+    Modal,
     Switch,
     Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -47,7 +48,6 @@ interface HardenSettings {
     networkRetryCount: number
     networkRetryTokens: string
     backgroundJobTool: boolean
-    openFolderVisible: boolean
 }
 
 /** 兜底重试次数的合法区间（与 host 侧 api.ts 的校验保持一致）。 */
@@ -69,8 +69,14 @@ interface Notice {
 /** 「检查更新」的本地三态占位（接口未定，不真发网络请求）。 */
 type UpdatePhase = 'idle' | 'checking' | 'latest'
 
+/** 装载 / 卸载「打开文件夹」接管的方向（弹窗文案按它分岔）。 */
+type OpenFolderToggle = 'load' | 'unload'
+
 /** 配置端点（读与写共用）。 */
 const CONFIG_ENDPOINT = '/api/dsh-harden/config'
+
+/** 「打开文件夹」接管端点：读装载状态、装载/卸载。 */
+const OPEN_FOLDER_ENDPOINT = '/api/dsh-harden/open-folder'
 
 /** 写围栏要求的自定义头：它让请求变成非简单请求，跨站页面伪造不出来。 */
 const MUTATION_HEADER = { 'x-dsh-harden': '1' }
@@ -133,7 +139,6 @@ async function loadSettings(): Promise<HardenSettings> {
         networkRetryCount: typeof fields.networkRetryCount === 'number' ? fields.networkRetryCount : 3,
         networkRetryTokens: typeof fields.networkRetryTokens === 'string' ? fields.networkRetryTokens : '',
         backgroundJobTool: typeof fields.backgroundJobTool === 'boolean' ? fields.backgroundJobTool : true,
-        openFolderVisible: typeof fields.openFolderVisible === 'boolean' ? fields.openFolderVisible : true,
     }
 }
 
@@ -156,6 +161,8 @@ export function HardenPanel(props: PanelProps): ReactElement {
     const [busy, setBusy] = useState(false)
     const [notice, setNotice] = useState<Notice | null>(null)
     const [updatePhase, setUpdatePhase] = useState<UpdatePhase>('idle')
+    const [openFolderEnabled, setOpenFolderEnabled] = useState<boolean | null>(null)
+    const [restartHint, setRestartHint] = useState<OpenFolderToggle | null>(null)
 
     useEffect(() => {
         let alive = true
@@ -169,6 +176,16 @@ export function HardenPanel(props: PanelProps): ReactElement {
 
             } catch (error) {
                 if (alive) setState({ status: 'failed', message: messageOf(error) })
+                return
+            }
+
+            try {
+                const data = await fetchJson(OPEN_FOLDER_ENDPOINT)
+                if (alive) setOpenFolderEnabled(data.enabled === true)
+
+            } catch {
+                // 读不到就当未装载：按钮照常可用，点了会再试一次。
+                if (alive) setOpenFolderEnabled(false)
             }
         }
 
@@ -220,6 +237,42 @@ export function HardenPanel(props: PanelProps): ReactElement {
         }
     }
 
+    /**
+     * 装载 / 卸载「打开文件夹」接管。
+     *
+     * 与配置写回分开走：这一步改的是平台插件表（host 侧会成对切换两条 row），
+     * 不是插件配置，所以不复用 applyPatch。
+     *
+     * 成功后弹一次「需重启」提示：装载状态在宿主进程里即时切换，但必须重启 DSH
+     * 桌面端才真正生效，不给提示用户会以为已经生效。
+     *
+     * @param next - true 装载、false 卸载。
+     */
+    async function toggleOpenFolder(next: boolean): Promise<void> {
+        if (openFolderEnabled === null || busy) return
+
+        const previous = openFolderEnabled
+
+        setBusy(true)
+        setNotice(null)
+        setOpenFolderEnabled(next)
+
+        try {
+            await postJson(OPEN_FOLDER_ENDPOINT, { enabled: next })
+            setRestartHint(next ? 'load' : 'unload')
+
+        } catch (error) {
+            setOpenFolderEnabled(previous)
+            setNotice({
+                kind: 'error',
+                text: `${t('common.saveFailed')}：${translateHostText(t, messageOf(error))}`,
+            })
+
+        } finally {
+            setBusy(false)
+        }
+    }
+
     /** 读取失败后的重试：回到加载态，把加载效果重新跑一遍。 */
     function retry(): void {
         setState({ status: 'loading' })
@@ -227,14 +280,32 @@ export function HardenPanel(props: PanelProps): ReactElement {
         setAttempt(attempt + 1)
     }
 
+    /** 关掉「需重启」提示。 */
+    function closeRestartHint(): void {
+        setRestartHint(null)
+    }
+
+    // 装载 / 卸载刚成功时弹一次：宿主侧已切换，但浏览器壳不重启看不到变化。
+    const restartModal = restartHint === null
+        ? null
+        : createElement(Modal, {
+            open: true,
+            onClose: closeRestartHint,
+            title: t('openFolder.restartTitle'),
+            closeLabel: t('common.close'),
+            description: restartHint === 'load' ? t('openFolder.restartLoadDesc') : t('openFolder.restartUnloadDesc'),
+            footer: createElement(Button, { variant: 'primary', size: 'sm', onClick: closeRestartHint }, t('common.gotIt')),
+        })
+
     return createElement(
         'div',
         { style: PAGE },
         renderHeader(t, updatePhase, () => setUpdatePhase('checking')),
-        renderBody(state, t, busy, applyPatch, retry),
+        renderBody(state, t, busy, applyPatch, retry, openFolderEnabled, toggleOpenFolder),
         notice === null
             ? null
             : createElement('div', { style: notice.kind === 'ok' ? NOTICE_OK : NOTICE_ERROR }, notice.text),
+        restartModal,
     )
 }
 
@@ -297,6 +368,8 @@ function checkLabel(t: PlatformTranslate, phase: UpdatePhase): string {
  * @param busy - 是否有写回在飞。
  * @param onPatch - 配置补丁写回。
  * @param onRetry - 读取失败后的重试。
+ * @param openFolderEnabled - 「打开文件夹」接管当前是否装载；null = 尚未读到。
+ * @param onToggleOpenFolder - 装载 / 卸载「打开文件夹」接管。
  */
 function renderBody(
     state: LoadState,
@@ -304,6 +377,8 @@ function renderBody(
     busy: boolean,
     onPatch: (patch: Partial<HardenSettings>) => Promise<void>,
     onRetry: () => void,
+    openFolderEnabled: boolean | null,
+    onToggleOpenFolder: (next: boolean) => Promise<void>,
 ): ReactElement {
     if (state.status === 'loading') {
         return createElement('div', { style: HINT }, t('common.loading'))
@@ -347,15 +422,11 @@ function renderBody(
                 await onPatch({ backgroundJobTool: next })
             },
         }),
-        renderSwitchCard({
-            title: t('rule.openFolderVisible.title'),
-            description: t('rule.openFolderVisible.desc'),
-            help: t('rule.openFolderVisible.help'),
-            checked: state.settings.openFolderVisible,
-            disabled: busy,
-            onToggle: async (next) => {
-                await onPatch({ openFolderVisible: next })
-            },
+        renderOpenFolderCard({
+            t,
+            enabled: openFolderEnabled,
+            busy,
+            onToggle: onToggleOpenFolder,
         }),
     )
 }
@@ -403,6 +474,70 @@ function renderSwitchCard(props: SwitchCardProps): ReactElement {
             }),
         ),
         createElement('div', { style: CARD_DESC }, props.description),
+    )
+}
+
+/** 「打开文件夹」接管卡片的渲染参数。 */
+interface OpenFolderCardProps {
+    t: PlatformTranslate
+    /** 当前是否已装载；null = 尚未读到。 */
+    enabled: boolean | null
+    busy: boolean
+    onToggle: (next: boolean) => Promise<void>
+}
+
+/**
+ * 「打开文件夹」接管卡片：一行标题 + 问号说明 + 贴右的装载/卸载按钮，下面两行描述。
+ *
+ * 与其它卡片不同，这里不是一个持久化的配置开关，而是**运行时装载/卸载**
+ * 同包第二个入口（`dsh-harden/open-folder`）：装载时由它接管 `/open-in-app/*`、
+ * 同时把官方那行停掉；卸载时反过来，让官方启动器全部回来。
+ *
+ * @param props - 翻译函数、当前装载状态、忙碌标记与切换回调。
+ */
+function renderOpenFolderCard(props: OpenFolderCardProps): ReactElement {
+    const loaded = props.enabled === true
+    const disabled = props.busy || props.enabled === null
+    const label = loaded ? props.t('rule.openFolder.unload') : props.t('rule.openFolder.load')
+
+    return createElement(
+        'section',
+        { style: CARD },
+        createElement(
+            'div',
+            { style: ROW },
+            createElement('span', { style: CARD_TITLE }, props.t('rule.openFolder.title')),
+            createElement(Tooltip, {
+                label: props.t('rule.openFolder.help'),
+                side: 'bottom',
+                children: createElement(
+                    'span',
+                    { style: HELP_ANCHOR },
+                    createElement(IconQuestionOutlineRegular, { size: 14 }),
+                ),
+            }),
+            createElement('span', { style: SPACER }),
+            createElement(
+                Button,
+                {
+                    variant: loaded ? 'outline' : 'primary',
+                    size: 'sm',
+                    disabled,
+                    onClick: () => void props.onToggle(!loaded),
+                },
+                label,
+            ),
+        ),
+        createElement('div', { style: CARD_DESC }, props.t('rule.openFolder.desc')),
+        createElement(
+            'div',
+            { style: CARD_DESC },
+            props.enabled === null
+                ? props.t('common.loading')
+                : loaded
+                    ? props.t('rule.openFolder.loaded')
+                    : props.t('rule.openFolder.unloaded'),
+        ),
     )
 }
 

@@ -30,13 +30,26 @@ export interface HardenConfig {
     networkRetryTokens?: string
     /** 工具 `job_background`（把命令放后台 job 执行）的开关。默认 true。 */
     backgroundJobTool?: boolean
-    /** 「打开文件夹」时资源管理器窗口是否可见。默认 true。 */
-    openFolderVisible?: boolean
 }
 
 /** settings 服务里本插件用到的部分。 */
 export interface SettingsService {
     update(namespace: string, patch: object): void
+}
+
+/** 平台插件管理服务：本项目只用来在「打开文件夹」接管开/关之间成对切换两条 row。 */
+export interface PluginManagerService {
+    listPlugins(): Promise<PluginRowLike[]>
+    setPluginEnabled(entryId: string, enabled: boolean): Promise<unknown>
+}
+
+/** listPlugins() 返回的一行（只声明本项目读到的字段）。 */
+export interface PluginRowLike {
+    entryId: string
+    moduleName: string
+    enabled: boolean
+    patchId?: string
+    readOnlyReason?: string
 }
 
 /** cordis 上下文里本插件用到的部分。 */
@@ -49,6 +62,7 @@ export interface Ctx {
     effect?(callback: () => void | (() => void)): void
     readonly settings?: SettingsService
     readonly webServer?: WebServerService
+    readonly pluginManager?: PluginManagerService
 }
 
 export interface Logger {

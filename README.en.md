@@ -1,6 +1,13 @@
 # dsh-harden
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/dsh-harden"><img src="https://img.shields.io/npm/v/dsh-harden?logo=npm&logoColor=white&color=cb3837" alt="npm version"></a>
+  <a href="https://github.com/thissensen/dsh-harden/actions/workflows/ci.yml"><img src="https://github.com/thissensen/dsh-harden/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/thissensen/dsh-harden/releases"><img src="https://img.shields.io/github/v/release/thissensen/dsh-harden?color=blue&logo=github" alt="Release"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/thissensen/dsh-harden?color=3da639" alt="license"></a>
+</p>
+
+<p align="center">
   <b>A runtime hardening layer for DSH — every stop must have a clear reason</b>
 </p>
 
@@ -32,7 +39,7 @@ In one sentence: **an explicit failure is fine; a silent stop is not.**
 - **Recover a turn that ends without any reply text** — when the last step has only reasoning, the turn is pulled back for one more step.
 - **Continue after a network interruption** — after the official retry budget runs out, the plugin adds extra attempts for the failure kinds you list.
 - **Background task tool** — gives the model a `job_background` tool to run long commands in the background without blocking the turn.
-- **Explorer window visible** — fixes the platform bug where "Open with → Explorer" did nothing.
+- **Open folder takeover** — fixes the platform bug where "Open with → Explorer" did nothing. Load/unload it any time from the settings page: while loaded only Explorer is offered; unload to bring every official launcher back.
 - **Unbounded and switchable** — no cap on injections, and every rule has its own toggle.
 - **Never touches your config or patches the platform** — switches live in the platform `settings`; it only listens to public events and patches no `@deepseek-ai/*` package.
 
@@ -100,7 +107,7 @@ The settings page lives under the "DSH Optimize" section and has five cards:
 | **Turn ends without a reply** | Toggle. A turn whose last step has only reasoning is pulled back for one more step. |
 | **Continue after a network interruption** | Toggle plus **Network retry count** (0–99 extra attempts after the official retries run out; 0 disables it) and **Failures that trigger a retry** (failure codes `SERVER` / `RATE_LIMIT` / `TIMEOUT` / `TRANSPORT` and HTTP statuses `502` / `429`; empty retries nothing). |
 | **Background task tool** | Toggle. When on, the model can start background commands with `job_background` and manage them with `job_list` / `job_output` / `job_kill`. When off, the tool disappears. |
-| **Explorer window visible when opening a folder** | Toggle. When on, "Open with → Explorer" pops up a window; when off, no window pops up, matching the platform original. No restart needed after changing it. |
+| **Open folder takeover** | Load / Unload button. While loaded, the plugin takes over opening folders so "Open with → Explorer" pops up a window; the official launchers (VS Code, Cursor, Git Bash, Windows Terminal, …) are unavailable. Unload to bring every official launcher back. After switching, a dialog reminds you to restart the DSH desktop app, because the change only takes effect after a restart. |
 
 > ⚠️ **The one that matters most**: **"Failure warning prefixes" is empty by default, so leaving it blank after install means rule H1 is off.** Open the settings page and paste the fixed beginning of your platform's warning text (example: `⚠ Could not execute tool`).
 
