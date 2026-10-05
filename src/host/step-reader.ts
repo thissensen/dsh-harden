@@ -1,5 +1,5 @@
 /**
- * 从会话日志里读「某一步的 assistant 消息」——规则 H1 的判定输入。
+ * 从会话日志里读「回合最后一步的 assistant 消息」——规则 H1 与 H2 的判定输入。
  *
  * **读取面收敛点。** 这里用到平台的 `Session.snapshotEvents()`，它已被平台标为
  * deprecated（2026-09-27 核实）；平台建议改用 `ctx.sessionQuery` 或
@@ -10,36 +10,6 @@
  */
 
 import type { AssistantMessageLike, SessionEventLike, SessionLike } from './types.js'
-
-/**
- * 取某一步的 assistant 消息。
- *
- * 遍历会话事件里 `type === 'assistant/message'` 且 turn/step 都对上的**最后一条**
- * ——同一步若落了多条（重试、续写），以最后一条为准。
- *
- * @param session - agent 的会话。
- * @param turn - 回合号。
- * @param step - 步号。
- * @returns 该步的 assistant 消息；没有则 null。
- */
-export function readStepAssistantMessage(
-    session: SessionLike,
-    turn: number,
-    step: number,
-): AssistantMessageLike | null {
-    let found: AssistantMessageLike | null = null
-
-    for (const event of readEventsSafely(session)) {
-        if (event.type !== 'assistant/message') continue
-        if (event.data?.turn !== turn) continue
-        if (event.data?.step !== step) continue
-
-        const message = event.data.message
-        if (message !== undefined && message !== null) found = message
-    }
-
-    return found
-}
 
 /**
  * 读会话事件；任何读取失败都当作空数组——看护层不能因为读不到历史就把会话搞挂。

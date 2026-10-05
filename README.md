@@ -44,6 +44,12 @@
   <img src="./assets/fix-tool-call-retry.png" width="90%" alt="工具调用失败，已提示模型重新发起">
 </p>
 
+模型只输出思考、没有正文就收尾时，插件自动提示模型补充正文，回合不会莫名结束：
+
+<p align="center">
+  <img src="./assets/fix-empty-turn.png" width="90%" alt="回合没有答复就收尾，已提示模型补充正文">
+</p>
+
 ## 插件截图
 
 <p align="center">

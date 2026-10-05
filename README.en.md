@@ -58,6 +58,12 @@ When a tool call fails and gets swallowed, the plugin asks the model to retry, s
   <img src="./assets/fix-tool-call-retry.png" width="90%" alt="Tool call failed, the model has been asked to retry">
 </p>
 
+When a turn ends with only reasoning and no reply text, the plugin asks the model to add the missing reply, so the turn no longer ends for no reason:
+
+<p align="center">
+  <img src="./assets/fix-empty-turn.png" width="90%" alt="Turn ended without a reply, the model has been asked to add the text">
+</p>
+
 ## Screenshots
 
 <p align="center">

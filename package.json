@@ -59,7 +59,7 @@
     "test": "vitest run"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/cordis": "~4.0.4 || ~4.0.5-0",
     "@deepseek-ai/dsh-agent": ">=0.1.7-rc.1",
     "@deepseek-ai/dsh-compaction": ">=0.1.7-rc.1",
     "@deepseek-ai/dsh-jobs": ">=0.1.7-rc.1",
