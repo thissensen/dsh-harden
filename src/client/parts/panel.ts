@@ -466,9 +466,16 @@ interface SessionRepairCardProps {
 /** 一次修复的汇总（卡片内展示）。 */
 interface RepairSummary {
     总数: number
+    无需修复数: number
     已修复数: number
-    跳过数: number
+    修不了数: number
+    读取失败数: number
+    /** 修不了 / 读取失败的条目（最多展示前 10 条，其余只报数量）。 */
+    失败明细组: { 会话: string; 原因: string }[]
 }
+
+/** 失败明细最多列出的条数：再多会把卡片撑得很长，剩下的只报数量。 */
+const REPAIR_DETAIL_LIMIT = 10
 
 /**
  * 「修复损坏会话」卡片：标题 + 问号说明 + 贴右的修复按钮，下面一行描述与结果汇总。
@@ -493,9 +500,29 @@ function SessionRepairCard(props: SessionRepairCardProps): ReactElement {
 
         try {
             const data = await postJson(REPAIR_ENDPOINT, {})
-            const 总数 = Number(data.总数)
-            const 已修复数 = Number(data.已修复数)
-            setSummary({ 总数, 已修复数, 跳过数: 总数 - 已修复数 })
+
+            // 明细组是不可信输入：非数组按空数组处理，只留下「修不了 / 读取失败」两类。
+            const 原始明细组: unknown[] = Array.isArray(data.明细组) ? data.明细组 : []
+            const 失败明细组: { 会话: string; 原因: string }[] = []
+
+            for (const 明细 of 原始明细组) {
+                const 条目 = 明细 as { filePath?: unknown; status?: unknown; reason?: unknown }
+                if (条目.status !== 'unrepairable' && 条目.status !== 'read-failed') continue
+
+                // 会话名＝路径倒数第二段（会话目录名）；不足两段（没有目录部分）时退回整串。
+                const 会话名 = String(条目.filePath).split(/[\\/]/).at(-2) ?? String(条目.filePath)
+
+                失败明细组.push({ 会话: 会话名, 原因: String(条目.reason ?? '') })
+            }
+
+            setSummary({
+                总数: Number(data.总数),
+                无需修复数: Number(data.通过数),
+                已修复数: Number(data.已修复数),
+                修不了数: Number(data.修不了数),
+                读取失败数: Number(data.读取失败数),
+                失败明细组: 失败明细组.slice(0, REPAIR_DETAIL_LIMIT),
+            })
 
         } catch (error) {
             setFailureText(messageOf(error))
@@ -510,8 +537,39 @@ function SessionRepairCard(props: SessionRepairCardProps): ReactElement {
         : createElement(
             'div',
             { style: CARD_DESC },
-            props.t('repair.done', { p1: summary.总数, p2: summary.已修复数, p3: summary.跳过数 }),
+            props.t('repair.done', {
+                p1: summary.总数,
+                p2: summary.无需修复数,
+                p3: summary.已修复数,
+                p4: summary.修不了数,
+                p5: summary.读取失败数,
+            }),
         )
+
+    // 明细只列前 10 条：两类失败的总数减去已列出的条数，就是被截掉没列出的条数。
+    const detailLines: ReactElement[] = []
+
+    if (summary !== null) {
+        for (const [index, 明细] of summary.失败明细组.entries()) {
+            const 原因文本 = translateHostText(props.t, 明细.原因)
+
+            detailLines.push(
+                createElement(
+                    'div',
+                    { key: `${明细.会话}-${index}`, style: DETAIL_LINE },
+                    `${明细.会话}：${原因文本}`,
+                ),
+            )
+        }
+
+        const 未列出数 = summary.修不了数 + summary.读取失败数 - summary.失败明细组.length
+
+        if (未列出数 > 0) {
+            detailLines.push(
+                createElement('div', { key: 'more', style: DETAIL_LINE }, props.t('repair.more', { p1: 未列出数 })),
+            )
+        }
+    }
 
     const failureLine = failureText === null
         ? null
@@ -547,6 +605,7 @@ function SessionRepairCard(props: SessionRepairCardProps): ReactElement {
         ),
         createElement('div', { style: CARD_DESC }, props.t('repair.desc')),
         summaryLine,
+        detailLines,
         failureLine,
     )
 }
@@ -989,6 +1048,13 @@ const CARD: CSSProperties = {
 const CARD_TITLE: CSSProperties = { fontWeight: 600 }
 
 const CARD_DESC: CSSProperties = { color: 'var(--dsw-alias-label-secondary)' }
+
+/** 修复明细行：小字 + 次级文本色（失败条目本身不是操作失败，不用错误红）；长原因换行不撑破卡片。 */
+const DETAIL_LINE: CSSProperties = {
+    fontSize: '0.92em',
+    color: 'var(--dsw-alias-label-secondary)',
+    wordBreak: 'break-word',
+}
 
 const ROW: CSSProperties = { display: 'flex', alignItems: 'center', gap: '0.5em' }
 

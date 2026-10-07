@@ -110,12 +110,13 @@ export const zh = {
     'panel.settingsNotReady': '设置服务未就绪',
 
     'repair.title': '修复损坏会话',
-    'repair.desc': '扫描全部会话文件，修复已知的两类损坏，让打不开的会话重新可用',
+    'repair.desc': '扫描全部会话文件，修复已知的损坏形态，让打不开的会话重新可用',
     'repair.help':
-        '会话文件有两类已知损坏会让平台整份拒读：重试编号不一致、事件序号用了范围编码。点一下扫描全部会话文件，能修的当场修好，正在使用中的会话文件会被跳过、不做改动。',
+        '已知的损坏形态会让平台整份拒读会话文件：重试链异常（重试编号重复/跳号、同一链的 id 不一致）与事件序号范围编码。一键扫描全部会话文件，能修的修好，修不了的如实跳过。',
     'repair.button': '一键扫描并修复',
     'repair.running': '正在扫描并修复…',
-    'repair.done': '扫描 {p1} 个会话：已修复 {p2} 个，跳过 {p3} 个',
+    'repair.done': '扫描 {p1} 个会话：无需修复 {p2} 个、已修复 {p3} 个、修不了 {p4} 个、读取失败 {p5} 个',
+    'repair.more': '……还有 {p1} 条未列出',
     'repair.failed': '修复失败',
 
     'common.loading': '正在读取配置…',
@@ -226,12 +227,13 @@ export const en: Record<CopyKey, string> = {
     'panel.settingsNotReady': 'Settings service is not ready',
 
     'repair.title': 'Repair broken sessions',
-    'repair.desc': 'Scans every session file and repairs the two known kinds of damage so unreadable sessions work again',
+    'repair.desc': 'Scans every session file and repairs known kinds of damage so unreadable sessions work again',
     'repair.help':
-        'Two known kinds of damage make the platform reject a whole session file: mismatched retry ids and event sequence ranges. One click scans every session file, repairs what it can, and skips files that are currently in use without touching them.',
+        'Known kinds of damage make the platform reject a whole session file: a broken retry chain (repeated or skipped retry numbers, or mismatched ids within one chain) and event-sequence range encodings. One click scans every session file, repairs what it can, and skips the rest.',
     'repair.button': 'Scan and repair',
     'repair.running': 'Scanning and repairing…',
-    'repair.done': 'Scanned {p1} sessions: repaired {p2}, skipped {p3}',
+    'repair.done': 'Scanned {p1} sessions: {p2} intact, {p3} repaired, {p4} unrepairable, {p5} read-failed',
+    'repair.more': '…and {p1} more not listed',
     'repair.failed': 'Repair failed',
 
     'common.loading': 'Reading configuration…',

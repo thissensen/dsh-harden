@@ -1,29 +1,42 @@
 /**
- * 会话修复模块 —— 扫描会话文件、判定好坏、内存修复两类已知损坏、过校验才落盘。
+ * 会话修复模块 —— 扫描会话文件、判定好坏、在内存里修两类已知的损坏形态（重试链规范化 +
+ * 序号范围编码展开）、过平台校验才落盘。
  *
  * **背景。** 会话持久化文件是「多帧 zstd 串联」的 JSONL：首行是 `type: "session"` 的
  * header，其余每行一条会话事件。平台读取时会用 `restoreReleasedV4Artifact` 做一次严格
- * 校验，遇到两类已知损坏会整份拒读：
+ * 校验，遇到这两类损坏形态会整份拒读：
  *
- * - **A 类（retryId 不一致）**：同一 policy chain（turn + step + provider + policyKey
- *   四元组）内的 `llm/retry` 与 `llm/retry-started` 必须共享同一个 retryId；插件兜底
- *   重试时若换了 id，校验就拒。
- * - **B 类（sourceEventSeqs 范围编码）**：`sourceEventSeqs` 里允许写 `[start, end]`
+ * - **重试链异常**：同一 policy chain（turn + step + provider + policyKey 四元组）内 retry
+ *   编号重复或跳号，或者整条链的 retryId 不一致。平台对每条链有两条不变量——`llm/retry` 的
+ *   `retry` 从 1 起逐条 +1，且整条链共用同一个 retryId。这种形态有两个来源：平台自带重试器
+ *   写出重复的序号（校验报 llm/retry skips its policy attempt sequence）、本插件早期版本的兜底
+ *   重试每次换新 id（校验报 llm/retry must keep one retryId per policy chain）。
+ * - **sourceEventSeqs 序号范围编码**：`sourceEventSeqs` 里允许写 `[start, end]`
  *   形式的子数组；校验器只认扁平数字，遇到范围就不解码。
  *
- * 本模块在**内存里**修好这两类损坏，只有**修完再校验通过**才写回磁盘；写回用「临时文件 +
- * rename」原子替换，任何一步失败都不落盘。
+ * 本模块在**内存里**修好这两类损坏形态：先把重试链**规范化**（同链 retry 编号按出现顺序重排
+ * 1..n、整链 retryId 归并成第一条、配对的 `llm/retry-started` 按 (retryId, retry) 同步改写），
+ * 再**展开**序号范围编码。只有**修完再校验通过**才写回磁盘；写回用「临时文件 + rename」原子
+ * 替换，任何一步失败都不落盘。
  *
- * **平台包用锚点解析。** 三个平台包（持久化 jsonl / v3-to-v4 格式 / session 事件表）不写死
- * 绝对路径：先由插件入口 resolve 出 `dsh-session-persistence-jsonl`，再从它的入口路径派生
- * 出 `@deepseek-ai` 目录，按同级包名取绝对路径。平台包只在真正要校验时才加载——开发与 CI
- * 环境没有它们，顶层静态 import 会让整个模块挂掉。
+ * **平台包按两个候选定位。** 三个平台包（持久化 jsonl / v3-to-v4 格式 / session 事件表）不写死
+ * 绝对路径：先 resolve 一个能解析到的包，再从它的入口路径派生出 `@deepseek-ai` 目录，按同级
+ * 包名取绝对路径。候选按装法分两档：
+ *
+ * - **首选** `dsh-session-persistence-jsonl`：插件装进 profile 内（非 link）时它是同级依赖，直接
+ *   resolve 得到；
+ * - **锚点** `dsh-agent`：`link:` 装法下 peerDependencies 里只有这一项被链进插件
+ *   `node_modules`，内部包全不在（见 `.harness/05-坑册.md` 坑 22），只能靠它反推目录。
+ *
+ * 派生出的目录里必须同时存在 `dsh-session-format-v3-to-v4` 与 `dsh-session`，缺一则换下一个
+ * 候选。平台包只在真正要校验时才加载——开发与 CI 环境没有它们，顶层静态 import 会让整个模块挂掉。
  *
  * @module dsh-harden/session-repair
  */
 
 import { createRequire } from 'node:module'
 import { constants, zstdCompressSync, zstdDecompressSync } from 'node:zlib'
+import { existsSync } from 'node:fs'
 import { readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { join, sep } from 'node:path'
 
@@ -36,11 +49,23 @@ const ZSTD_FRAME_MAGIC = 4247762216
 /** 每帧带 xxhash64 校验和的压缩选项。 */
 const CHECKSUM_OPTIONS = { params: { [constants.ZSTD_c_checksumFlag]: 1 } }
 
+/** 首选包名：插件装进 profile 内（非 link）时是同级依赖，能直接解析到。 */
+const 首选包名 = '@deepseek-ai/dsh-session-persistence-jsonl'
+
+/** 锚点包名：`link:` 装法下只有它会被链进插件的 node_modules，见 `.harness/05-坑册.md` 坑 22。 */
+const 锚点包名 = '@deepseek-ai/dsh-agent'
+
+/** 派生出的平台包目录里必须同时存在的两个包，见 `.harness/05-坑册.md` 坑 22。 */
+const 必需包名组 = ['dsh-session-format-v3-to-v4', 'dsh-session']
+
+/** 插件模块自己的 require；平台包按 peerDependencies 的链接关系解析。 */
+const 插件require = createRequire(import.meta.url)
+
 /** 修复结果的状态。 */
 export type RepairStatus = 'intact' | 'repaired' | 'unrepairable' | 'read-failed'
 
 /** 实际改动的类别。 */
-export type RepairCategory = 'retryId-merged' | 'sourceEventSeqs-expanded'
+export type RepairCategory = 'retry-chain-normalized' | 'sourceEventSeqs-expanded'
 
 /** 单个会话文件的修复结果。 */
 export interface RepairOutcome {
@@ -100,11 +125,12 @@ export async function scanSessionFiles(会话根目录: string): Promise<string[
 /**
  * 修复单个会话文件。
  *
- * 流程：读文件 → 解码帧 → 拆 header/事件 → 平台校验 → 好则报「无需修复」，坏则尝试
- * A/B 两类修复 → 改后再校验 → 过了才写回，不过则不落盘。
+ * 流程：读文件 → 解码帧 → 拆 header/事件 → 平台校验 → 好则报「无需修复」，坏则依次尝试
+ * 重试链规范化与序号范围编码展开 → 改后再校验 → 过了才写回，不过则不落盘。
+ * 校验不通过时把平台的原话带进 reason，便于判断损坏形态。
  *
  * @param 文件路径 - 会话文件路径。
- * @param 校验器 - 可注入的校验器；缺省时用锚点解析出的平台校验器。
+ * @param 校验器 - 可注入的校验器；缺省时用两候选定位加载的平台校验器。
  * @returns 修复结果。
  */
 export async function repairSessionFile(文件路径: string, 校验器?: SessionValidator): Promise<RepairOutcome> {
@@ -134,23 +160,30 @@ export async function repairSessionFile(文件路径: string, 校验器?: Sessio
         return { filePath: 文件路径, status: 'unrepairable', reason: `平台校验器不可用：${错误文本(err)}`, changedCategories: [] }
     }
 
-    if (isValid(实际校验器, header, events)) {
+    const 首检 = 跑校验(实际校验器, header, events)
+    if (首检.通过) {
         return { filePath: 文件路径, status: 'intact', reason: '校验通过，无需修复', changedCategories: [] }
     }
 
     const 改动类别组: RepairCategory[] = []
-    if (mergeRetryIds(events)) 改动类别组.push('retryId-merged')
+    if (normalizeRetryChain(events)) 改动类别组.push('retry-chain-normalized')
     if (expandSourceEventSeqs(events)) 改动类别组.push('sourceEventSeqs-expanded')
 
     if (改动类别组.length === 0) {
-        return { filePath: 文件路径, status: 'unrepairable', reason: '校验失败，但不属于已知的两类损坏', changedCategories: [] }
-    }
-
-    if (isValid(实际校验器, header, events) === false) {
         return {
             filePath: 文件路径,
             status: 'unrepairable',
-            reason: `修复后仍未通过校验（已改：${改动类别组.join('、')}）`,
+            reason: `校验失败（${首检.原因}），且不属于已知的可修类别`,
+            changedCategories: [],
+        }
+    }
+
+    const 复检 = 跑校验(实际校验器, header, events)
+    if (复检.通过 === false) {
+        return {
+            filePath: 文件路径,
+            status: 'unrepairable',
+            reason: `修复后仍未通过校验（已改：${改动类别组.join('、')}）：${复检.原因}`,
             changedCategories: [],
         }
     }
@@ -168,48 +201,78 @@ export async function repairSessionFile(文件路径: string, 校验器?: Sessio
 }
 
 /**
- * A 类修复：把同一 policy chain 内的 retryId 归并成该链第一条 `llm/retry` 的。
+ * 重试链规范化：把每条 policy chain 的 retry 序号重排成 1..n 连续，并把整条链的 retryId 归并
+ * 成该链第一条 `llm/retry` 的。
  *
- * 两遍扫描：先按 chain 记下第一条 `llm/retry` 的 retryId 作为规范值，再改写该 chain 下
- * 所有 `llm/retry` 与 `llm/retry-started` 的 retryId。同一 chain 的 `retry-started`
- * 与 `retry` 共享 chain 键（turn/step/provider/policyKey），按 chain 改写即等于按
- * retryId+retry 配对同步。
+ * 这是把平台的两条不变量一起满足：`llm/retry` 的 `retry` 从 1 起逐条 +1、整条链共用
+ * 一个 retryId。`llm/retry-started` 在平台上靠 `(retryId, retry)` 配对
+ * （`retries.find(item => item.retryId === id && item.retry === attempt)`），所以序号与
+ * 编号改动后**必须同步改写**它，否则改完的文件仍会报 llm/retry-started pairs no prior
+ * scheduled attempt。
+ *
+ * 单遍扫描，两类事件分开处理：
+ * - `llm/retry`：推进该链坐标（新链从 1 起，老链接着上一条 +1），把「本条原有的 (编号, 序号)
+ *   → 规范化后的 (编号, 序号)」登记进配对映射组，并记下最近一次 scheduled 的目标坐标。
+ * - `llm/retry-started`：真机写出的 started **不带** provider/policyKey（只有 retryId /
+ *   turn / step / retry），平台校验也只用 (retryId, retry) 配对，故这里不构造链键——先按自己
+ *   报的 (编号, 序号) 查配对映射组，查不到就归并到它前面那条 scheduled 的目标坐标。后一种正是
+ *   「配错队」的损坏形态（旧版插件每次重试换新 id 就是这么写坏的），归并到前一条 scheduled 是
+ *   唯一能过校验的修法。
  *
  * @param events - 会话事件组（会被原地修改）。
  * @returns 是否真的改动了内容。
  */
-export function mergeRetryIds(events: unknown[]): boolean {
-    const 规范编号组 = new Map<string, string>()
-    for (const event of events) {
-        if (读事件类型(event) !== 'llm/retry') continue
-        const data = 读事件数据(event)
-        if (data === null) continue
-        const 链键 = 构造重试链键(data)
-        if (链键 === null) continue
-        const 编号 = 读文本字段(data, 'retryId')
-        if (编号 === null) continue
-        if (规范编号组.has(链键) === false) 规范编号组.set(链键, 编号)
-    }
-
+export function normalizeRetryChain(events: unknown[]): boolean {
+    const 链状态组 = new Map<string, { 序号: number; 编号: string }>()
+    const 配对映射组 = new Map<string, { 编号: string; 序号: number }>()
+    let 最近重试: { 编号: string; 序号: number } | undefined
     let 有改动 = false
+
     for (const event of events) {
         const 类型 = 读事件类型(event)
         if (类型 !== 'llm/retry' && 类型 !== 'llm/retry-started') continue
         const data = 读事件数据(event)
         if (data === null) continue
-        const 链键 = 构造重试链键(data)
-        if (链键 === null) continue
-        const 规范编号 = 规范编号组.get(链键)
-        if (规范编号 === undefined) continue
-        if (读文本字段(data, 'retryId') === 规范编号) continue
-        data.retryId = 规范编号
+        const 原编号 = 读文本字段(data, 'retryId')
+        const 原序号 = 读数字字段(data, 'retry')
+        if (原编号 === null || 原序号 === null) continue
+
+        let 目标编号: string
+        let 目标序号: number
+        if (类型 === 'llm/retry') {
+            const 链键 = 构造重试链键(data)
+            if (链键 === null) continue
+            const 链状态 = 链状态组.get(链键)
+            if (链状态 === undefined) {
+                目标编号 = 原编号
+                目标序号 = 1
+
+            } else {
+                目标编号 = 链状态.编号
+                目标序号 = 链状态.序号 + 1
+            }
+            链状态组.set(链键, { 编号: 目标编号, 序号: 目标序号 })
+            配对映射组.set(`${原编号}|${原序号}`, { 编号: 目标编号, 序号: 目标序号 })
+            最近重试 = { 编号: 目标编号, 序号: 目标序号 }
+
+        } else {
+            let 目标坐标 = 配对映射组.get(`${原编号}|${原序号}`)
+            if (目标坐标 === undefined) 目标坐标 = 最近重试
+            if (目标坐标 === undefined) continue
+            目标编号 = 目标坐标.编号
+            目标序号 = 目标坐标.序号
+        }
+
+        if (data.retryId === 目标编号 && data.retry === 目标序号) continue
+        data.retryId = 目标编号
+        data.retry = 目标序号
         有改动 = true
     }
     return 有改动
 }
 
 /**
- * B 类修复：遍历所有事件，把 `sourceEventSeqs` 里的 `[start, end]` 展开成扁平数字。
+ * 序号范围编码展开：遍历所有事件，把 `sourceEventSeqs` 里的 `[start, end]` 展开成扁平数字。
  *
  * @param events - 会话事件组（会被原地修改）。
  * @returns 是否真的改动了内容。
@@ -362,6 +425,12 @@ function 读文本字段(data: Record<string, unknown>, 字段名: string): stri
     return typeof value === 'string' ? value : null
 }
 
+/** 从 data 里读一个数字字段；类型不符时返回 null。 */
+function 读数字字段(data: Record<string, unknown>, 字段名: string): number | null {
+    const value = data[字段名]
+    return typeof value === 'number' ? value : null
+}
+
 /** 构造 policy chain 的键：turn + step + provider + policyKey，缺一返回 null。 */
 function 构造重试链键(data: Record<string, unknown>): string | null {
     const turn = data.turn
@@ -423,54 +492,75 @@ function 展开节点内序号范围(node: unknown, 字段名: string): boolean 
 }
 
 /**
- * 用锚点解析加载平台校验器。
+ * 用「两候选定位」加载平台校验器。
  *
- * 先由插件入口 resolve 出持久化包，再从它的入口路径派生出 `@deepseek-ai` 目录，按同级包名
- * 取绝对路径加载 `dsh-session-format-v3-to-v4` 与 `dsh-session`。两个包都是 CJS，用同步
- * require 加载。
+ * 按候选顺序逐个试：解析出入口路径 → 从入口路径派生 `@deepseek-ai` 目录 → 确认目录里有
+ * 两个必需包 → 用入口路径建 require 加载 `dsh-session-format-v3-to-v4` 与 `dsh-session`。
+ * 一个候选失败就把原因累积成一行文本、继续下一个；两个都失败时把两次原因拼成一条错误抛出。
  *
- * pnpm 的符号链接会让「用持久化包路径建 createRequire 再 resolve 同级包」失败（真实路径的
- * node_modules 链里没有同级包的链接），故改为从入口路径直接派生平台包目录。
+ * 两个包都是 CJS，用同步 require 加载。pnpm 的符号链接会让「用包入口路径建 createRequire
+ * 再 resolve 同级包」失败（真实路径的 node_modules 链里没有同级包的链接），故改为从入口
+ * 路径直接派生平台包目录。
+ *
+ * @param 解析 - 包名到入口路径的解析器；缺省用插件自己的 require。测试注入假的平台包目录。
  */
-function loadPlatformValidator(): SessionValidator {
-    const 插件require = createRequire(import.meta.url)
-    const 持久化包路径 = 插件require.resolve('@deepseek-ai/dsh-session-persistence-jsonl')
-    const 路径分段组 = 持久化包路径.split(sep)
-    const 目录索引 = 路径分段组.lastIndexOf('@deepseek-ai')
-    if (目录索引 <= 0) throw new Error('无法从平台包路径定位 @deepseek-ai 目录')
-    const 平台包目录 = 路径分段组.slice(0, 目录索引 + 1).join(sep)
-    const 锚点require = createRequire(持久化包路径)
+export function loadPlatformValidator(解析: (包名: string) => string = (包名) => 插件require.resolve(包名)): SessionValidator {
+    const 候选组 = [
+        { 包名: 首选包名, 说明: `首选包 ${首选包名}` },
+        { 包名: 锚点包名, 说明: `锚点包 ${锚点包名}` },
+    ]
+    const 失败原因组: string[] = []
 
-    const v3to4 = 锚点require(join(平台包目录, 'dsh-session-format-v3-to-v4')) as {
-        restoreReleasedV4Artifact: (artifact: unknown, knownTypes: unknown) => void
-    }
-    const session模块 = 锚点require(join(平台包目录, 'dsh-session')) as { KNOWN_SESSION_EVENT_TYPES: unknown }
+    for (const 候选 of 候选组) {
+        try {
+            const 入口路径 = 解析(候选.包名)
+            const 路径分段组 = 入口路径.split(sep)
+            const 目录索引 = 路径分段组.lastIndexOf('@deepseek-ai')
+            if (目录索引 <= 0) throw new Error('无法从平台包路径定位 @deepseek-ai 目录')
+            const 平台包目录 = 路径分段组.slice(0, 目录索引 + 1).join(sep)
 
-    return {
-        validate: (header, events) => {
-            v3to4.restoreReleasedV4Artifact(
-                { header, events, inheritedEventCount: 0 },
-                session模块.KNOWN_SESSION_EVENT_TYPES,
-            )
-        },
+            for (const 必需包名 of 必需包名组) {
+                if (existsSync(join(平台包目录, 必需包名)) === false) throw new Error(`候选目录里没有 ${必需包名}`)
+            }
+
+            const 锚点require = createRequire(入口路径)
+            const v3to4 = 锚点require(join(平台包目录, 'dsh-session-format-v3-to-v4')) as {
+                restoreReleasedV4Artifact: (artifact: unknown, knownTypes: unknown) => void
+            }
+            const session模块 = 锚点require(join(平台包目录, 'dsh-session')) as { KNOWN_SESSION_EVENT_TYPES: unknown }
+
+            return {
+                validate: (header, events) => {
+                    v3to4.restoreReleasedV4Artifact(
+                        { header, events, inheritedEventCount: 0 },
+                        session模块.KNOWN_SESSION_EVENT_TYPES,
+                    )
+                },
+            }
+        } catch (err) {
+            失败原因组.push(`${候选.说明}：${错误文本(err)}`)
+            continue
+        }
     }
+
+    throw new Error(`定位平台包目录失败 —— ${失败原因组.join('；')}`)
 }
 
 /**
- * 跑一次校验。
+ * 跑一次校验，并把平台校验器的失败原因原样带回。
  *
  * @param 校验器 - 平台或注入的校验器。
  * @param header - 剥掉 type 的 header。
  * @param events - 事件组。
- * @returns 通过返回 true，抛异常返回 false。
+ * @returns 通过时为 `{ 通过: true, 原因: '' }`；失败时原因 = 平台抛出的异常文本。
  */
-function isValid(校验器: SessionValidator, header: Record<string, unknown>, events: unknown[]): boolean {
+function 跑校验(校验器: SessionValidator, header: Record<string, unknown>, events: unknown[]): { 通过: boolean; 原因: string } {
     try {
         校验器.validate(header, events)
-        return true
+        return { 通过: true, 原因: '' }
 
-    } catch {
-        return false
+    } catch (err) {
+        return { 通过: false, 原因: 错误文本(err) }
     }
 }
 
