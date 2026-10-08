@@ -47,6 +47,8 @@ export interface HardenConfig {
     compactionThreshold?: string
     /** 交给摘要模型的压缩指令；用户可改。 */
     compactionInstruction?: string
+    /** 规则「子代理通知聚合」的开关。默认 false。 */
+    subagentAggregation?: boolean
 }
 
 /** settings 服务里本插件用到的部分。 */
@@ -68,6 +70,8 @@ export interface Ctx {
     readonly tokenMeter?: TokenMeterService
     /** 平台 LLM 服务（压缩的摘要调用用）。 */
     readonly llm?: LlmService
+    /** 平台 agent 注册表服务（子代理通知聚合判「还有没有别的活跃子代理」用）。 */
+    readonly agents?: AgentRegistryService
 }
 
 export interface Logger {
@@ -160,8 +164,15 @@ export interface SessionLike {
     readonly seq?: number
     /** 会话 id（压缩的摘要调用要原样透传）。 */
     readonly id?: string
-    /** 会话头：压缩判定「主代理还是子代理」读它的 `origin`（子代理为 `'subagent'`）。 */
-    readonly header?: { readonly origin?: string; readonly delegationDepth?: number }
+    /**
+     * 会话头。压缩判定「主代理还是子代理」读 `origin`（子代理为 `'subagent'`）；
+     * 子代理通知聚合读 `parentSession`（直接父会话 id，根代理没有）。
+     */
+    readonly header?: {
+        readonly origin?: string
+        readonly delegationDepth?: number
+        readonly parentSession?: string
+    }
 }
 
 /** Agent 里本项目用到的面。 */
@@ -220,6 +231,64 @@ export interface RequestErrorPayload {
  * 平台没有「断点续写」能力，故没有第三种动作可选。
  */
 export type RequestErrorAction = { readonly kind: 'retry' } | undefined
+
+// ── 规则「子代理通知聚合」用到的平台面 ──────────────────────────────────────
+
+/** Agent 收件箱里本项目用到的面。 */
+export interface InboxLike {
+    /** 摘掉一条还在 pending 里的消息；已被取走时返回 false。 */
+    remove(messageId: string): boolean
+    /** 就地替换一条还在 pending 里的消息；已被取走时返回 false。 */
+    replace(messageId: string, newMessage: unknown): boolean
+}
+
+/** 消息的生产者标记里本项目读到的字段。 */
+export interface MessageSourceLike {
+    /** 结算通知为 `'subagent-settled'`。 */
+    readonly kind?: string
+    /** 结算通知里 = 发通知的子代理会话 id。 */
+    readonly senderSessionId?: string
+}
+
+/** 一条收件箱消息里本项目读到的面（结算通知与聚合消息同形）。 */
+export interface InboxMessageLike {
+    /** 消息身份：`inbox.remove` / `inbox.replace` 与防重入记账都按它比对。 */
+    readonly id: string
+    /** 模型可见内容块。 */
+    readonly content: readonly MessageBlock[]
+    readonly source?: MessageSourceLike
+}
+
+/** Agent 里聚合模块用到的面。 */
+export interface AggregationAgentLike {
+    readonly id: string
+    readonly session: SessionLike
+    readonly inbox: InboxLike
+    /** 排队一条普通后续回合并唤醒（兜底投递用）。 */
+    followup(message: unknown): void
+}
+
+/** 平台的 agent 注册表服务（`ctx.agents`）：本项目只读这两个方法。 */
+export interface AgentRegistryService {
+    /** 按会话 id 取活跃 agent；不在时返回 undefined。 */
+    get(id: string): AggregationAgentLike | undefined
+    /** 全部活跃 agent（注册顺序）。 */
+    list(): readonly AggregationAgentLike[]
+}
+
+/**
+ * `agent/inbox/inserted` 的载荷（emit 模式：每次收件箱插入都同步发一次，
+ * 含平台投递的结算通知与插件自己的 replace / followup 投递）。
+ */
+export interface InboxInsertedPayload {
+    readonly agent: AggregationAgentLike
+    readonly message: InboxMessageLike
+}
+
+/** `agent/disposed` 的载荷（emit 模式：被移除的是 agent 自己，不是它的父）。 */
+export interface AgentDisposedPayload {
+    readonly agent: AggregationAgentLike
+}
 
 // ── webServer（api.ts 注册前缀路由用）─────────────────────────────────────
 

@@ -107,6 +107,14 @@ export const DEFAULT_COMPACTION_INSTRUCTION = [
     '- 只输出摘要正文：不要调用任何工具，不要做任何其它动作。',
 ].join('\n')
 
+/**
+ * 默认值：规则「子代理通知聚合」的开关。
+ *
+ * 默认**关**——它会把父代理收到的结算通知压住并改写（合成一条），默认不动手，
+ * 用户自己去设置页打开（与「上下文自动压缩」同纪律）。
+ */
+export const DEFAULT_SUBAGENT_AGGREGATION = false
+
 /** 平台按这个名字认配置 schema（`Config = { … }` 是平台侧的约定名）。 */
 export const Config = z.object({
     toolFailureGuard: z.boolean().default(DEFAULT_TOOL_FAILURE_GUARD).volatile(),
@@ -119,6 +127,7 @@ export const Config = z.object({
     compactionScope: z.union(COMPACTION_SCOPES).default(DEFAULT_COMPACTION_SCOPE).volatile(),
     compactionThreshold: z.string().default(DEFAULT_COMPACTION_THRESHOLD).volatile(),
     compactionInstruction: z.string().default(DEFAULT_COMPACTION_INSTRUCTION).volatile(),
+    subagentAggregation: z.boolean().default(DEFAULT_SUBAGENT_AGGREGATION).volatile(),
 })
 
 /**
@@ -145,6 +154,7 @@ export function readConfig(raw: unknown): Required<HardenConfig> {
         compactionScope: readCompactionScope(obj.compactionScope),
         compactionThreshold: unwrapField(obj.compactionThreshold, DEFAULT_COMPACTION_THRESHOLD, 'string'),
         compactionInstruction: unwrapField(obj.compactionInstruction, DEFAULT_COMPACTION_INSTRUCTION, 'string'),
+        subagentAggregation: unwrapField(obj.subagentAggregation, DEFAULT_SUBAGENT_AGGREGATION, 'boolean'),
     }
 }
 
@@ -161,6 +171,7 @@ export function defaultConfig(): Required<HardenConfig> {
         compactionScope: DEFAULT_COMPACTION_SCOPE,
         compactionThreshold: DEFAULT_COMPACTION_THRESHOLD,
         compactionInstruction: DEFAULT_COMPACTION_INSTRUCTION,
+        subagentAggregation: DEFAULT_SUBAGENT_AGGREGATION,
     }
 }
 

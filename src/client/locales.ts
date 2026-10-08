@@ -19,6 +19,7 @@ export const zh = {
     'nudge.rowAria': '插件介入',
     'nudge.toolFailure': 'DSH优化：工具调用失败，已提示模型重新发起（第 {p1} 次）',
     'nudge.emptyTurn': 'DSH优化：回合没有答复就收尾，已提示模型补充正文（第 {p1} 次）',
+    'progress.held': '子代理结算通知已暂存（第 {p1} 条），全部结束后统一送达',
 
     'header.name': 'DSH优化',
     'header.checkUpdate': '检查更新',
@@ -96,6 +97,7 @@ export const zh = {
     'api.networkRetryTokensInvalid': 'networkRetryTokens 必须是不超过 200 字的字符串',
     'api.toolFailurePrefixesInvalid': 'toolFailurePrefixes 必须是不超过 2000 字的字符串',
     'api.backgroundJobToolNotBoolean': 'backgroundJobTool 必须是布尔值',
+    'api.subagentAggregationNotBoolean': 'subagentAggregation 必须是布尔值',
     'api.contextCompactionNotBoolean': 'contextCompaction 必须是布尔值',
     'api.compactionScopeInvalid': 'compactionScope 必须是 all、main 或 subagent',
     'api.compactionThresholdInvalid': 'compactionThreshold 必须是能解析成正整数的字符串',
@@ -106,6 +108,11 @@ export const zh = {
     'rule.backgroundJobTool.desc': '创建工具对接 pwsh，让模型能把长命令丢到后台跑，不占住当前回合',
     'rule.backgroundJobTool.help':
         '开启后，模型可以用 job_background 工具起后台命令，再用 job_list / job_output / job_kill 查看和停止。关闭后该工具从工具表里消失。',
+
+    'rule.subagentAggregation.title': '子代理通知聚合',
+    'rule.subagentAggregation.desc': '多个子代理并行结束时，压住中间的结算通知，全部结束后合并成一条统一送达，不再逐个唤醒',
+    'rule.subagentAggregation.help':
+        '默认关闭。开启后，等待期间用户消息照常放行；插件重载会丢弃还没送达的暂存通知。',
 
     'panel.settingsNotReady': '设置服务未就绪',
 
@@ -135,6 +142,7 @@ export const en: Record<CopyKey, string> = {
     'nudge.rowAria': 'Plugin intervention',
     'nudge.toolFailure': 'DSH Optimize: a tool call failed; the model was asked to retry (attempt {p1})',
     'nudge.emptyTurn': 'DSH Optimize: the turn ended without a reply; the model was asked to add one (attempt {p1})',
+    'progress.held': 'Subagent completion notices are held back ({p1} so far) and delivered together once every subagent has finished',
 
     'header.name': 'DSH Optimize',
     'header.checkUpdate': 'Check for updates',
@@ -213,6 +221,7 @@ export const en: Record<CopyKey, string> = {
     'api.networkRetryTokensInvalid': 'networkRetryTokens must be a string of at most 200 characters',
     'api.toolFailurePrefixesInvalid': 'toolFailurePrefixes must be a string of at most 2000 characters',
     'api.backgroundJobToolNotBoolean': 'backgroundJobTool must be a boolean',
+    'api.subagentAggregationNotBoolean': 'subagentAggregation must be a boolean',
     'api.contextCompactionNotBoolean': 'contextCompaction must be a boolean',
     'api.compactionScopeInvalid': 'compactionScope must be one of all, main, subagent',
     'api.compactionThresholdInvalid': 'compactionThreshold must be a string that parses to a positive integer',
@@ -223,6 +232,11 @@ export const en: Record<CopyKey, string> = {
     'rule.backgroundJobTool.desc': 'Creates a tool wired to pwsh, letting the model run long commands in the background without blocking the turn',
     'rule.backgroundJobTool.help':
         'When on, the model can start background commands with the job_background tool and manage them with job_list / job_output / job_kill. When off, the tool disappears from the tool list.',
+
+    'rule.subagentAggregation.title': 'Aggregate subagent notices',
+    'rule.subagentAggregation.desc': 'When several subagents finish in parallel, their notices are held back and delivered together as one message once every subagent is done, instead of waking the model one by one',
+    'rule.subagentAggregation.help':
+        'Off by default. While it is on, user messages still go through during the wait; reloading the plugin discards held notices that have not been delivered yet.',
 
     'panel.settingsNotReady': 'Settings service is not ready',
 
