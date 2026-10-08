@@ -12,9 +12,13 @@
  * **只注册一个 `settings.section`。** 平台在渲染 section 列表时，第二个注册会抛错并让
  * 整页空白（参考项目的 client/index.ts 有同样注释）。
  *
- * 除设置页 section 外，本壳还注册一行「插件介入」的会话节点（conversation.chat.node
- * 的渲染器 + uiConversation.events.register 的定义），把看护层注入的纠正消息显示成
- * 一行浅色系统提示。节点定义见本文件，渲染器见 parts/nudge-row.ts。
+ * 除设置页 section 外，本壳还注册两个会话节点（各自的 conversation.chat.node 渲染器
+ * + uiConversation.events.register 定义），都显示成一行浅色系统提示：
+ *
+ *   - 「插件介入」把看护层注入的纠正消息摆出来（parts/nudge-row.ts）；
+ *   - 「子代理通知暂存」在等待期间提示结算通知被压住了（parts/progress-row.ts）。
+ *
+ * 两个节点定义都在本文件里，各自的 kind 与渲染器 key 一一对应。
  *
  * @module dsh-harden/client
  */
@@ -25,6 +29,8 @@ import { en, LOCALE_NS, translateZh, zh } from './locales'
 import type { PlatformTranslate } from './locales'
 import { NudgeRow } from './parts/nudge-row'
 import type { NudgeRowProps } from './parts/nudge-row'
+import { ProgressRow } from './parts/progress-row'
+import type { ProgressRowProps } from './parts/progress-row'
 import { HardenPanel } from './parts/panel'
 
 /** `settings.section` 的登记描述符（本壳用到的字段）。 */
@@ -47,6 +53,12 @@ interface ChatNodeDescriptor {
     locale: string
 }
 
+/** `conversation.chat.node` 渲染器属性里平台保证注入的部分（node 的具体形状由各渲染器自定）。 */
+interface ChatNodeRenderProps {
+    node: { kind: string; data: unknown }
+    t?: PlatformTranslate
+}
+
 /** 平台 locale 服务里本壳用到的部分。 */
 interface LocaleService {
     register(ns: string, dicts: Record<string, Record<string, string>>): () => void
@@ -61,8 +73,13 @@ interface ClientContext {
         inject(name: string, register: () => void): void
         /** `settings.section`：注册项带 id / order / label，平台把绑好的 t 注入组件。 */
         register(descriptor: SectionDescriptor, component: (props: { t?: PlatformTranslate }) => ReactElement): void
-        /** `conversation.chat.node`：按 key 挂渲染器，平台把会话节点与绑好的 t 注入组件。 */
-        register(descriptor: ChatNodeDescriptor, component: (props: NudgeRowProps) => ReactElement): void
+        /**
+         * `conversation.chat.node`：按 key 挂渲染器，平台把会话节点与绑好的 t 注入组件。
+         *
+         * 泛型是因为每个渲染器只认自己那份 node 形状（`props.node.data` 各异）；
+         * 平台传进来的其余字段照旧透传。
+         */
+        register<Props extends ChatNodeRenderProps>(descriptor: ChatNodeDescriptor, component: (props: Props) => ReactElement): void
     }
     locale: LocaleService
     /** 会话流服务：注册本插件自己的 Chat 节点定义。 */
@@ -185,6 +202,73 @@ const HARDEN_NUDGE_DEFINITION: ConversationEventDefinition = {
     },
 }
 
+// ── 会话流节点：「子代理通知暂存」提示 ──────────────────────────────────────
+
+/** 本行在 Chat 里的节点 kind 与渲染器 key（两处必须一致）。 */
+const PROGRESS_ROW_KIND = 'harden-progress-row'
+
+/**
+ * 本行的业务标识：**固定值是有意的**。
+ *
+ * 平台按 `kind + id` 建会话上下文（平台 `dsh-client-ui-conversation` 的
+ * `conversationContextKey` + `acceptMatch`）：同一个 id 让后续每次命中都落进同一个
+ * 上下文、走 `update`，计数才能跨事件累计；换成「一条事件一个 id」，就成了一行行
+ * 各报「第 1 条」的独立提示。
+ */
+const PROGRESS_ROW_ID = 'harden-subagent-aggregation'
+
+/** 「子代理通知暂存」行的节点状态。 */
+interface HardenProgressState {
+    /** 本会话累计暂存的结算通知条数（文案里的 N）。 */
+    count: number
+}
+
+/**
+ * 「子代理通知暂存」行的会话节点定义。
+ *
+ * 匹配 host 压住兄弟子代理的结算通知时、平台自动落盘的收件簿摘除事件
+ * （`agent/inbox/spliced`：摘掉 1 条、没有补进任何消息、结果是被取消）。判定只看
+ * 结构化字段，不依赖任何文案。**这条事件在聊天里本来没有痕迹**（没插入任何消息），
+ * 本定义把它投影成一行 visibility: 'visible' 的独立提示。
+ *
+ * 已知不精确：用户在界面上撤回自己排队中的消息时，平台走的是同一条摘除路径
+ * （摘 1 条、结果 canceled），本行会跟着多算一条（无伤功能）。
+ */
+const HARDEN_PROGRESS_DEFINITION: ConversationEventDefinition = {
+    kind: PROGRESS_ROW_KIND,
+    target: 'chat',
+    match: (event) => {
+        if (event.type !== 'agent/inbox/spliced') return null
+        if (event.data.outcome !== 'canceled') return null
+        if (event.data.removedCount !== 1) return null
+        if (Array.isArray(event.data.inserted) === false || event.data.inserted.length > 0) return null
+
+        return { id: PROGRESS_ROW_ID, role: 'start' }
+    },
+    start: () => ({ count: 1 }),
+    update: (context) => {
+        const state = context.state as HardenProgressState
+        return { count: state.count + 1 }
+    },
+    buildViewNode: (context) => {
+        const state = context.state as HardenProgressState | undefined
+        const anchorSeq = context.start?.event.seq
+        if (state === undefined || anchorSeq === undefined) return null
+
+        return {
+            key: context.key,
+            kind: PROGRESS_ROW_KIND,
+            id: context.id,
+            target: 'chat',
+            // 与「插件介入」行同款：-0.1 让它排在本条事件自身之前。
+            anchorSeq: anchorSeq - 0.1,
+            location: context.start?.location ?? { kind: 'unresolved' },
+            visibility: 'visible',
+            data: { count: state.count },
+        }
+    },
+}
+
 /** 本插件依赖的平台服务（只列名字，平台按它决定何时调用 `apply`）。 */
 export const inject = ['slots', 'locale', 'uiConversation']
 
@@ -213,6 +297,7 @@ export function apply(ctx: ClientContext): void {
     })
 
     ctx.uiConversation.events.register(HARDEN_NUDGE_DEFINITION)
+    ctx.uiConversation.events.register(HARDEN_PROGRESS_DEFINITION)
 
     ctx.slots.inject('conversation.chat.node', () => {
         ctx.slots.register(
@@ -221,7 +306,18 @@ export function apply(ctx: ClientContext): void {
                 key: NUDGE_ROW_KIND,
                 locale: LOCALE_NS,
             },
-            (props) => createElement(NudgeRow, props),
+            (props: NudgeRowProps) => createElement(NudgeRow, props),
+        )
+    })
+
+    ctx.slots.inject('conversation.chat.node', () => {
+        ctx.slots.register(
+            {
+                name: 'conversation.chat.node',
+                key: PROGRESS_ROW_KIND,
+                locale: LOCALE_NS,
+            },
+            (props: ProgressRowProps) => createElement(ProgressRow, props),
         )
     })
 }

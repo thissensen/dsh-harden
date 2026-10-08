@@ -62,6 +62,7 @@ interface HardenSettings {
     networkRetryCount: number
     networkRetryTokens: string
     backgroundJobTool: boolean
+    subagentAggregation: boolean
     contextCompaction: boolean
     compactionScope: CompactionScope
     compactionThreshold: string
@@ -154,6 +155,7 @@ async function loadSettings(): Promise<HardenSettings> {
         networkRetryCount: typeof fields.networkRetryCount === 'number' ? fields.networkRetryCount : 3,
         networkRetryTokens: typeof fields.networkRetryTokens === 'string' ? fields.networkRetryTokens : '',
         backgroundJobTool: typeof fields.backgroundJobTool === 'boolean' ? fields.backgroundJobTool : true,
+        subagentAggregation: typeof fields.subagentAggregation === 'boolean' ? fields.subagentAggregation : false,
         contextCompaction: typeof fields.contextCompaction === 'boolean' ? fields.contextCompaction : false,
         compactionScope: readCompactionScope(fields.compactionScope),
         compactionThreshold: typeof fields.compactionThreshold === 'string' ? fields.compactionThreshold : '200K',
@@ -406,6 +408,16 @@ function renderBody(
             disabled: busy,
             onToggle: async (next) => {
                 await onPatch({ backgroundJobTool: next })
+            },
+        }),
+        renderSwitchCard({
+            title: t('rule.subagentAggregation.title'),
+            description: t('rule.subagentAggregation.desc'),
+            help: t('rule.subagentAggregation.help'),
+            checked: state.settings.subagentAggregation,
+            disabled: busy,
+            onToggle: async (next) => {
+                await onPatch({ subagentAggregation: next })
             },
         }),
         createElement(SessionRepairCard, { t }),

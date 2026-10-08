@@ -2,7 +2,8 @@
  * dsh-harden —— host 半边。
  *
  * 挂两个公开事件：`agent/turn-stopping`（serial）上跑规则 H1 与 H2，`agent/request-error`
- * （waterfall）上跑规则 H3。
+ * （waterfall）上跑规则 H3。其余模块（上下文自动压缩、子代理通知聚合、后台 job 工具）
+ * 由各自文件挂载。
  *
  * **为什么 H1 也挂收尾点。** 真机会话实测（2026-09-27）：工具调用失败的那个回合只有 1 步，
  * 旧挂点 `agent/pre-step` 判「上一步」永远判不到。改成读本回合最后一步的正文，挂在回合
@@ -40,6 +41,7 @@ import { mountApi } from './api.js'
 import type { ConfigScope } from './api.js'
 import { mountJobBackground } from './job-background.js'
 import { mountContextCompaction } from './compaction.js'
+import { mountSubagentAggregation } from './subagent-aggregate.js'
 import { SETTINGS_NAMESPACE } from './config.js'
 
 /** 平台按这个 id 认配置 schema（`Config` 是平台侧的约定名，见 config.ts）。 */
@@ -91,10 +93,12 @@ export function apply(ctx: Ctx, config: unknown): void {
     logger.info?.(
         `[harden] 规则「上下文自动压缩」= ${now.contextCompaction ? `开，阈值 ${now.compactionThreshold}，范围 ${now.compactionScope}` : '关'}`,
     )
+    logger.info?.(`[harden] 规则「子代理通知聚合」= ${now.subagentAggregation ? '开' : '关'}`)
 
     mountConfigApi(ctx, logger, config)
     mountContextCompaction(ctx, logger, () => current())
     mountJobBackground(ctx, logger, () => current().backgroundJobTool)
+    mountSubagentAggregation(ctx, logger, () => current())
 }
 
 /**
