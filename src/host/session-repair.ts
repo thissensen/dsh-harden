@@ -7,17 +7,19 @@
  * 校验，遇到这两类损坏形态会整份拒读：
  *
  * - **重试链异常**：同一 policy chain（turn + step + provider + policyKey 四元组）内 retry
- *   编号重复或跳号，或者整条链的 retryId 不一致。平台对每条链有两条不变量——`llm/retry` 的
- *   `retry` 从 1 起逐条 +1，且整条链共用同一个 retryId。这种形态有两个来源：平台自带重试器
- *   写出重复的序号（校验报 llm/retry skips its policy attempt sequence）、本插件早期版本的兜底
- *   重试每次换新 id（校验报 llm/retry must keep one retryId per policy chain）。
+ *   编号重复或跳号、整条链的 retryId 不一致，或者序号重排后 `normal` 模式的 `maxRetries`
+ *   不够用。这种形态的来源是平台自带重试器写出重复的序号（校验报
+ *   llm/retry skips its policy attempt sequence）与本插件早期版本的兜底重试每次换新 id
+ *   （校验报 llm/retry must keep one retryId per policy chain）。
  * - **sourceEventSeqs 序号范围编码**：`sourceEventSeqs` 里允许写 `[start, end]`
  *   形式的子数组；校验器只认扁平数字，遇到范围就不解码。
  *
- * 本模块在**内存里**修好这两类损坏形态：先把重试链**规范化**（同链 retry 编号按出现顺序重排
- * 1..n、整链 retryId 归并成第一条、配对的 `llm/retry-started` 按 (retryId, retry) 同步改写），
- * 再**展开**序号范围编码。只有**修完再校验通过**才写回磁盘；写回用「临时文件 + rename」原子
- * 替换，任何一步失败都不落盘。
+ * 本模块在**内存里**修好这两类损坏形态：先把重试链**规范化**（交给 `retry-chain-ledger.ts` 的
+ * 重试链账本：同链 retry 编号按出现顺序重排 1..n、整链 retryId 归并成第一条、配对的
+ * `llm/retry-started` 按 (retryId, retry) 同步改写，并把 `normal` 模式的 `maxRetries` 抬到
+ * 不小于本条序号——真机样本 `dfd3eb08…` 同链两条 `retry = 1` 且 `maxRetries = 1`，序号重排
+ * 成 2 后不改它仍会被平台拒），再**展开**序号范围编码。只有**修完再校验通过**才写回磁盘；写回用
+ * 「临时文件 + rename」原子替换，任何一步失败都不落盘。
  *
  * **平台包按两个候选定位。** 三个平台包（持久化 jsonl / v3-to-v4 格式 / session 事件表）不写死
  * 绝对路径：先 resolve 一个能解析到的包，再从它的入口路径派生出 `@deepseek-ai` 目录，按同级
@@ -39,6 +41,8 @@ import { constants, zstdCompressSync, zstdDecompressSync } from 'node:zlib'
 import { existsSync } from 'node:fs'
 import { readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { join, sep } from 'node:path'
+
+import { 重试链账本 } from './retry-chain-ledger.js'
 
 /** 会话文件名。 */
 const SESSION_FILE_NAME = 'session.v4.jsonl.zstd'
@@ -201,31 +205,20 @@ export async function repairSessionFile(文件路径: string, 校验器?: Sessio
 }
 
 /**
- * 重试链规范化：把每条 policy chain 的 retry 序号重排成 1..n 连续，并把整条链的 retryId 归并
- * 成该链第一条 `llm/retry` 的。
+ * 重试链规范化：把每条 policy chain 的 retry 序号重排成 1..n 连续、整条链的 retryId 归并成该链
+ * 第一条 `llm/retry` 的，并把 `normal` 模式下不够用的 `maxRetries` 抬到不小于本条序号。
  *
- * 这是把平台的两条不变量一起满足：`llm/retry` 的 `retry` 从 1 起逐条 +1、整条链共用
- * 一个 retryId。`llm/retry-started` 在平台上靠 `(retryId, retry)` 配对
- * （`retries.find(item => item.retryId === id && item.retry === attempt)`），所以序号与
- * 编号改动后**必须同步改写**它，否则改完的文件仍会报 llm/retry-started pairs no prior
- * scheduled attempt。
- *
- * 单遍扫描，两类事件分开处理：
- * - `llm/retry`：推进该链坐标（新链从 1 起，老链接着上一条 +1），把「本条原有的 (编号, 序号)
- *   → 规范化后的 (编号, 序号)」登记进配对映射组，并记下最近一次 scheduled 的目标坐标。
- * - `llm/retry-started`：真机写出的 started **不带** provider/policyKey（只有 retryId /
- *   turn / step / retry），平台校验也只用 (retryId, retry) 配对，故这里不构造链键——先按自己
- *   报的 (编号, 序号) 查配对映射组，查不到就归并到它前面那条 scheduled 的目标坐标。后一种正是
- *   「配错队」的损坏形态（旧版插件每次重试换新 id 就是这么写坏的），归并到前一条 scheduled 是
- *   唯一能过校验的修法。
+ * 判定本身不在这里——四条不变量（序号连续、整链共用一个 retryId、`llm/retry-started` 配对、
+ * `maxRetries` 够用）收敛在 `retry-chain-ledger.ts` 的重试链账本里，本函数只负责「按日志顺序
+ * 喂事件 → 按结论原地改写 data」。`llm/retry-started` 的配对映射也由账本持有（真机写出的
+ * started 不带 provider/policyKey，平台只按 (retryId, retry) 配对）。
  *
  * @param events - 会话事件组（会被原地修改）。
  * @returns 是否真的改动了内容。
  */
 export function normalizeRetryChain(events: unknown[]): boolean {
-    const 链状态组 = new Map<string, { 序号: number; 编号: string }>()
-    const 配对映射组 = new Map<string, { 编号: string; 序号: number }>()
-    let 最近重试: { 编号: string; 序号: number } | undefined
+    // 账本有状态：修一份新日志必须换一个新实例。
+    const 账本 = new 重试链账本()
     let 有改动 = false
 
     for (const event of events) {
@@ -233,41 +226,16 @@ export function normalizeRetryChain(events: unknown[]): boolean {
         if (类型 !== 'llm/retry' && 类型 !== 'llm/retry-started') continue
         const data = 读事件数据(event)
         if (data === null) continue
-        const 原编号 = 读文本字段(data, 'retryId')
-        const 原序号 = 读数字字段(data, 'retry')
-        if (原编号 === null || 原序号 === null) continue
 
-        let 目标编号: string
-        let 目标序号: number
-        if (类型 === 'llm/retry') {
-            const 链键 = 构造重试链键(data)
-            if (链键 === null) continue
-            const 链状态 = 链状态组.get(链键)
-            if (链状态 === undefined) {
-                目标编号 = 原编号
-                目标序号 = 1
+        const 结论 = 类型 === 'llm/retry' ? 账本.归一重试事件(data) : 账本.归一启动事件(data)
+        if (结论 === null || 结论.有改动 === false) continue
 
-            } else {
-                目标编号 = 链状态.编号
-                目标序号 = 链状态.序号 + 1
-            }
-            链状态组.set(链键, { 编号: 目标编号, 序号: 目标序号 })
-            配对映射组.set(`${原编号}|${原序号}`, { 编号: 目标编号, 序号: 目标序号 })
-            最近重试 = { 编号: 目标编号, 序号: 目标序号 }
-
-        } else {
-            let 目标坐标 = 配对映射组.get(`${原编号}|${原序号}`)
-            if (目标坐标 === undefined) 目标坐标 = 最近重试
-            if (目标坐标 === undefined) continue
-            目标编号 = 目标坐标.编号
-            目标序号 = 目标坐标.序号
-        }
-
-        if (data.retryId === 目标编号 && data.retry === 目标序号) continue
-        data.retryId = 目标编号
-        data.retry = 目标序号
+        data.retryId = 结论.retryId
+        data.retry = 结论.retry
+        if (结论.maxRetries !== undefined) data.maxRetries = 结论.maxRetries
         有改动 = true
     }
+
     return 有改动
 }
 
@@ -417,29 +385,6 @@ function 读事件数据(event: unknown): Record<string, unknown> | null {
     const data = (event as Record<string, unknown>).data
     if (data === null || typeof data !== 'object' || Array.isArray(data)) return null
     return data as Record<string, unknown>
-}
-
-/** 从 data 里读一个字符串字段；类型不符时返回 null。 */
-function 读文本字段(data: Record<string, unknown>, 字段名: string): string | null {
-    const value = data[字段名]
-    return typeof value === 'string' ? value : null
-}
-
-/** 从 data 里读一个数字字段；类型不符时返回 null。 */
-function 读数字字段(data: Record<string, unknown>, 字段名: string): number | null {
-    const value = data[字段名]
-    return typeof value === 'number' ? value : null
-}
-
-/** 构造 policy chain 的键：turn + step + provider + policyKey，缺一返回 null。 */
-function 构造重试链键(data: Record<string, unknown>): string | null {
-    const turn = data.turn
-    const step = data.step
-    const provider = data.provider
-    const policyKey = data.policyKey
-    if (typeof turn !== 'number' || typeof step !== 'number') return null
-    if (typeof provider !== 'string' || typeof policyKey !== 'string') return null
-    return `${turn}|${step}|${provider}|${policyKey}`
 }
 
 /**

@@ -420,6 +420,28 @@ function renderBody(
                 await onPatch({ subagentAggregation: next })
             },
         }),
+        // 只读卡：写入路径上补的这道关卡常驻开启，关掉等于放任坏数据落盘，不存在「关闭」这个状态，卡片只做展示。
+        createElement(
+            'section',
+            { style: CARD },
+            createElement(
+                'div',
+                { style: ROW },
+                createElement('span', { style: CARD_TITLE }, t('rule.retryIntercept.title')),
+                createElement(Tooltip, {
+                    label: t('rule.retryIntercept.help'),
+                    side: 'bottom',
+                    children: createElement(
+                        'span',
+                        { style: HELP_ANCHOR },
+                        createElement(IconQuestionOutlineRegular, { size: 14 }),
+                    ),
+                }),
+                createElement('span', { style: SPACER }),
+                createElement('span', { style: FORCED_LABEL }, t('rule.retryIntercept.forced')),
+            ),
+            createElement('div', { style: CARD_DESC }, t('rule.retryIntercept.desc')),
+        ),
         createElement(SessionRepairCard, { t }),
     )
 }
@@ -1060,6 +1082,12 @@ const CARD: CSSProperties = {
 const CARD_TITLE: CSSProperties = { fontWeight: 600 }
 
 const CARD_DESC: CSSProperties = { color: 'var(--dsw-alias-label-secondary)' }
+
+/** 只读卡的「常驻开启」小标：灰字（三级文本色），与行内问号 HELP_ANCHOR 同一口径。 */
+const FORCED_LABEL: CSSProperties = {
+    color: 'var(--dsw-alias-label-tertiary)',
+    fontSize: '0.92em',
+}
 
 /** 修复明细行：小字 + 次级文本色（失败条目本身不是操作失败，不用错误红）；长原因换行不撑破卡片。 */
 const DETAIL_LINE: CSSProperties = {

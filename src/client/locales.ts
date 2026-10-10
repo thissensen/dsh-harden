@@ -20,6 +20,8 @@ export const zh = {
     'nudge.toolFailure': 'DSH优化：工具调用失败，已提示模型重新发起（第 {p1} 次）',
     'nudge.emptyTurn': 'DSH优化：回合没有答复就收尾，已提示模型补充正文（第 {p1} 次）',
     'progress.held': '子代理结算通知已暂存（第 {p1} 条），全部结束后统一送达',
+    'retryIntercept.rowAria': '插件介入',
+    'retryIntercept.corrected': '插件介入：平台重试链序号已修正（本回合 {p1} 处）',
 
     'header.name': 'DSH优化',
     'header.checkUpdate': '检查更新',
@@ -61,7 +63,7 @@ export const zh = {
     'rule.contextCompaction.title': '上下文自动压缩',
     'rule.contextCompaction.desc': '会话变长时自动把前面一段浓缩成摘要，释放上下文',
     'rule.contextCompaction.help':
-        '会话长度达到触发阈值时，插件把较早的一段对话交给模型浓缩成摘要，用摘要顶替原文继续，腾出上下文给后续内容。保留量按平台默认，摘要模型跟随当前会话。',
+        '会话长度达到触发阈值时，插件把较早的一段对话交给模型浓缩成摘要，用摘要顶替原文继续，腾出上下文给后续内容。保留量固定为阈值的 30%，摘要模型跟随当前会话。',
 
     'field.compactionScope.title': '压缩范围',
     'field.compactionScope.help':
@@ -114,6 +116,11 @@ export const zh = {
     'rule.subagentAggregation.help':
         '默认关闭。开启后，等待期间用户消息照常放行；插件重载会丢弃还没送达的暂存通知。',
 
+    'rule.retryIntercept.title': '子代理会话异常自动修复',
+    'rule.retryIntercept.forced': '常驻开启',
+    'rule.retryIntercept.desc': '解决子代理运行过程中莫名的会话无法打开情况。',
+    'rule.retryIntercept.help': '平台的校验只在读会话时做，写入路径上没有关卡；一旦坏数据落盘，整份会话就打不开。这一条在写入路径上补一道关卡，常驻开启、没有开关。修正发生时，会话回合尾部会显示一行浅色提示。',
+
     'panel.settingsNotReady': '设置服务未就绪',
 
     'repair.title': '修复损坏会话',
@@ -143,6 +150,8 @@ export const en: Record<CopyKey, string> = {
     'nudge.toolFailure': 'DSH Optimize: a tool call failed; the model was asked to retry (attempt {p1})',
     'nudge.emptyTurn': 'DSH Optimize: the turn ended without a reply; the model was asked to add one (attempt {p1})',
     'progress.held': 'Subagent completion notices are held back ({p1} so far) and delivered together once every subagent has finished',
+    'retryIntercept.rowAria': 'Plugin intervention',
+    'retryIntercept.corrected': 'Plugin intervention: retry-chain sequence corrected ({p1} in this turn)',
 
     'header.name': 'DSH Optimize',
     'header.checkUpdate': 'Check for updates',
@@ -184,7 +193,7 @@ export const en: Record<CopyKey, string> = {
     'rule.contextCompaction.title': 'Automatic context compaction',
     'rule.contextCompaction.desc': 'Condenses an earlier stretch of the conversation into a summary as it grows, freeing up context',
     'rule.contextCompaction.help':
-        'When the conversation reaches the trigger threshold, the plugin has the model condense an earlier stretch into a summary and continues from that summary instead of the original text, freeing context for what follows. The kept amount follows the platform default, and the summary model follows the current session.',
+        'When the conversation reaches the trigger threshold, the plugin has the model condense an earlier stretch into a summary and continues from that summary instead of the original text, freeing context for what follows. The kept amount is fixed at 30% of the threshold, and the summary model follows the current session.',
 
     'field.compactionScope.title': 'Compaction scope',
     'field.compactionScope.help':
@@ -237,6 +246,11 @@ export const en: Record<CopyKey, string> = {
     'rule.subagentAggregation.desc': 'When several subagents finish in parallel, their notices are held back and delivered together as one message once every subagent is done, instead of waking the model one by one',
     'rule.subagentAggregation.help':
         'Off by default. While it is on, user messages still go through during the wait; reloading the plugin discards held notices that have not been delivered yet.',
+
+    'rule.retryIntercept.title': 'Automatic repair for broken subagent sessions',
+    'rule.retryIntercept.forced': 'Always on',
+    'rule.retryIntercept.desc': 'Fixes the case where a session suddenly refuses to open while subagents are running.',
+    'rule.retryIntercept.help': 'The platform validates retry chains only when reading a session; the write path has no gate. This rule adds one on the write path and is always on. A light note appears at the turn tail whenever a correction happens.',
 
     'panel.settingsNotReady': 'Settings service is not ready',
 

@@ -12,13 +12,17 @@
  * **只注册一个 `settings.section`。** 平台在渲染 section 列表时，第二个注册会抛错并让
  * 整页空白（参考项目的 client/index.ts 有同样注释）。
  *
- * 除设置页 section 外，本壳还注册两个会话节点（各自的 conversation.chat.node 渲染器
- * + uiConversation.events.register 定义），都显示成一行浅色系统提示：
+ * 除设置页 section 外，本壳还注册三处会话界面提示，都显示成一行浅色系统提示：
  *
- *   - 「插件介入」把看护层注入的纠正消息摆出来（parts/nudge-row.ts）；
- *   - 「子代理通知暂存」在等待期间提示结算通知被压住了（parts/progress-row.ts）。
+ *   - 「插件介入」把看护层注入的纠正消息摆出来（parts/nudge-row.ts）——会话节点；
+ *   - 「子代理通知暂存」在等待期间提示结算通知被压住了（parts/progress-row.ts）——会话节点；
+ *   - 「重试链已修正」在回合尾部报告本回合被归一了几处重试（parts/retry-intercept-row.ts）
+ *     ——**插槽**（conversation.chat.turnTail），不是会话节点。
  *
- * 两个节点定义都在本文件里，各自的 kind 与渲染器 key 一一对应。
+ * 前两个走 conversation.chat.node：各自一个节点定义（uiConversation.events.register）配一个
+ * 渲染器（slots.register），kind 与渲染器 key 一一对应。第三个无处可挂：拦截器改的是平台
+ * 自己的事件类型，插件没有自己的会话事件可投影；往会话流里插自定义事件会让会话打不开
+ * （类型表是平台硬编码白名单），所以改走平台渲染回合尾部时现取的插槽。
  *
  * @module dsh-harden/client
  */
@@ -31,6 +35,8 @@ import { NudgeRow } from './parts/nudge-row'
 import type { NudgeRowProps } from './parts/nudge-row'
 import { ProgressRow } from './parts/progress-row'
 import type { ProgressRowProps } from './parts/progress-row'
+import { RetryInterceptRow } from './parts/retry-intercept-row'
+import type { RetryInterceptRowProps } from './parts/retry-intercept-row'
 import { HardenPanel } from './parts/panel'
 import { createProgressTracker } from './progress-match'
 
@@ -52,6 +58,17 @@ interface ChatNodeDescriptor {
     key: string
     /** 文案命名空间：平台据此把绑好的 t 注入渲染器 props。 */
     locale: string
+}
+
+/** `conversation.chat.turnTail` 的登记描述符（本壳用到的字段）。 */
+interface TurnTailSlotDescriptor {
+    name: string
+    /** list 类插槽的登记标识（第三方贡献用包名，本插件用 `harden-retry-intercept`）。 */
+    id: string
+    /** 文案命名空间：平台据此把绑好的 t 注入本组件 props。 */
+    locale: string
+    /** 会话作用域插槽的注入面工厂：参数是当前会话 id，返回值摊进组件 props。 */
+    inject: (sessionId: string) => Record<string, unknown>
 }
 
 /** `conversation.chat.node` 渲染器属性里平台保证注入的部分（node 的具体形状由各渲染器自定）。 */
@@ -81,6 +98,11 @@ interface ClientContext {
          * 平台传进来的其余字段照旧透传。
          */
         register<Props extends ChatNodeRenderProps>(descriptor: ChatNodeDescriptor, component: (props: Props) => ReactElement): void
+        /**
+         * `conversation.chat.turnTail`：会话级的 list 插槽，平台渲染回合尾部时现取。
+         * 属性里 `turn` / `seq` 由平台 renderSlot 传入，`sessionId` 是会话作用域的标准座席。
+         */
+        register(descriptor: TurnTailSlotDescriptor, component: (props: RetryInterceptRowProps) => ReactElement | null): void
     }
     locale: LocaleService
     /** 会话流服务：注册本插件自己的 Chat 节点定义。 */
@@ -202,6 +224,11 @@ const HARDEN_NUDGE_DEFINITION: ConversationEventDefinition = {
         }
     },
 }
+
+// ── 回合尾部插槽：「重试链已修正」提示 ──────────────────────────────────────
+
+/** 本行在插槽里的登记标识（list 类插槽要求；同 id 同优先级重复注册会抛错）。 */
+const RETRY_INTERCEPT_ID = 'harden-retry-intercept'
 
 // ── 会话流节点：「子代理通知暂存」提示 ──────────────────────────────────────
 
@@ -326,6 +353,21 @@ export function apply(ctx: ClientContext): void {
                 locale: LOCALE_NS,
             },
             (props: ProgressRowProps) => createElement(ProgressRow, props),
+        )
+    })
+
+    // 回合尾部插槽：平台渲染回合尾部时现取本组件，它自己去拉会话 id 对应的拦截记录。
+    // 会话 id 经官方 inject 面（会话作用域插槽的 InjectParams）再注入一份 props.注入会话ID：
+    // 组件的标准座席 props.sessionId 未经真机验证，平台不灌那一格时这条链路会永远静默不显示。
+    ctx.slots.inject('conversation.chat.turnTail', () => {
+        ctx.slots.register(
+            {
+                name: 'conversation.chat.turnTail',
+                id: RETRY_INTERCEPT_ID,
+                locale: LOCALE_NS,
+                inject: (sessionId) => ({ 注入会话ID: sessionId }),
+            },
+            (props: RetryInterceptRowProps) => createElement(RetryInterceptRow, props),
         )
     })
 }

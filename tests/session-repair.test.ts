@@ -3,9 +3,12 @@
  *
  * 被测对象是 `src/host/session-repair.ts`：
  * - 纯函数 `normalizeRetryChain()`（重试链规范化：同链 retry 序号重排成 1..n + 同链共用
- *   一个 retryId）与 `expandSourceEventSeqs()`（序号范围编码展开）——直接验证改动结果；
+ *   一个 retryId + `normal` 模式的 maxRetries 抬到不小于本条序号）与
+ *   `expandSourceEventSeqs()`（序号范围编码展开）——直接验证改动结果；
  * - 完整流程 `repairSessionFile()`——注入模拟平台校验器，用真实 zstd 文件验证
  *   「无需修复 / 已修复 / 修不了 / 读取失败」四态与落盘行为。
+ *
+ * 判定逻辑已下沉到 `src/host/retry-chain-ledger.ts` 的重试链账本，本文件只管修复器这一层。
  *
  * @module dsh-harden/tests/session-repair
  */
@@ -31,6 +34,26 @@ function 重试启动事件(turn: number, step: number, retryId: string, retry: 
     return { type: 'llm/retry-started', data: { retryId, turn, step, retry } }
 }
 
+/**
+ * 构造一条真机形状的 llm/retry 事件：带 mode / maxRetries，用来覆盖第 4 条不变量
+ * （坐标取真机样本 dfd3eb08… 的 turn 1 / step 7 / provider command-code）。
+ */
+function 带限额重试事件(retryId: string, retry: number, maxRetries: number): unknown {
+    return {
+        type: 'llm/retry',
+        data: {
+            turn: 1,
+            step: 7,
+            provider: 'command-code',
+            policyKey: '["normal",1,[],500,10000,0.1]',
+            mode: 'normal',
+            retryId,
+            retry,
+            maxRetries,
+        },
+    }
+}
+
 /** 构造一条带 sourceEventSeqs 的事件。 */
 function 序号事件(序号组: unknown[]): unknown {
     return { type: 'assistant/message', data: { turn: 1, step: 1, sourceEventSeqs: 序号组 } }
@@ -52,7 +75,12 @@ function 解码会话文件(内容: Buffer): unknown[] {
 
 /**
  * 模拟平台校验器：同链 retryId 不一致、同链 retry 序号不连续、llm/retry-started 配不上既存的
- * llm/retry（或坐标不符、重复配对）、sourceEventSeqs 含子数组，四条规则都拒。
+ * llm/retry（或坐标不符、重复配对）、`normal` 模式的 maxRetries 缺失或不够用（`always` 模式
+ * 反而带了它）、sourceEventSeqs 含子数组——五条规则都拒。
+ *
+ * 规则形状逐条对照平台源码（`dsh-session-persistence-jsonl` 的 `assertReleasedPayloadSemantics()`
+ * 的 llm/retry 分支与 `Relationships.retry()`）：假校验器不认真机写出的形态时，会出现「测试全绿
+ * 但真机修不好」，所以平台新增不变量必须同步补进来。
  */
 function 模拟平台校验(header: unknown, events: unknown[]): void {
     const 规范编号组 = new Map<string, string>()
@@ -83,6 +111,18 @@ function 模拟平台校验(header: unknown, events: unknown[]): void {
         if (data.retry !== 期望序号) throw new Error('retry 序号不连续')
         重试序号组.set(链键, 期望序号)
         已调度组.push({ retryId: data.retryId, retry: data.retry, turn: data.turn, step: data.step })
+
+        // 第 4 条不变量：normal 模式必带够用的 maxRetries，always 模式必须不带。
+        if (data.mode === 'normal') {
+            const 最大值 = data.maxRetries
+            if (typeof 最大值 !== 'number' || Number.isInteger(最大值) === false || 最大值 < 1) {
+                throw new Error('llm/retry maxRetries 必须是正整数')
+            }
+            if (data.retry > 最大值) throw new Error('llm/retry retry exceeds maxRetries')
+
+        } else if (data.mode === 'always' && data.maxRetries !== void 0) {
+            throw new Error('llm/retry always mode must omit maxRetries')
+        }
     }
 
     for (const 事件 of events) {
@@ -380,6 +420,110 @@ describe('repairSessionFile（完整流程与状态表达）', () => {
 
             const 复读结果 = await repairSessionFile(文件, 用假校验器())
             expect(复读结果.status).toBe('intact')
+        } finally {
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
+    it('normal 模式 maxRetries 不够（真机形状：同链两条 retry=1 + maxRetries=1）被修好', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            await writeFile(文件, 编码会话文件([
+                { type: 'session', id: 's1' },
+                带限额重试事件('id-1', 1, 1),
+                重试启动事件(1, 7, 'id-1', 1),
+                带限额重试事件('id-2', 1, 1),
+                重试启动事件(1, 7, 'id-2', 1),
+            ]))
+
+            const 结果 = await repairSessionFile(文件, 用假校验器())
+            expect(结果.status).toBe('repaired')
+            expect(结果.changedCategories).toContain('retry-chain-normalized')
+
+            const 落盘行组 = 解码会话文件(await readFile(文件))
+            const 落盘坐标组 = 落盘行组.slice(1).map((事件) => (事件 as { data: { retryId: string; retry: number; maxRetries?: number } }).data)
+            expect(落盘坐标组.map((坐标) => [坐标.retryId, 坐标.retry, 坐标.maxRetries])).toEqual([
+                ['id-1', 1, 1],
+                ['id-1', 1, undefined],
+                ['id-1', 2, 2],
+                ['id-1', 2, undefined],
+            ])
+
+            const 复读结果 = await repairSessionFile(文件, 用假校验器())
+            expect(复读结果.status).toBe('intact')
+        } finally {
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
+    it('maxRetries 够大时只归并链、不动 maxRetries', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            await writeFile(文件, 编码会话文件([
+                { type: 'session', id: 's1' },
+                带限额重试事件('id-1', 1, 5),
+                带限额重试事件('id-2', 2, 5),
+            ]))
+
+            const 结果 = await repairSessionFile(文件, 用假校验器())
+            expect(结果.status).toBe('repaired')
+
+            const 落盘行组 = 解码会话文件(await readFile(文件))
+            const 落盘坐标组 = 落盘行组.slice(1).map((事件) => (事件 as { data: { retryId: string; retry: number; maxRetries: number } }).data)
+            expect(落盘坐标组.map((坐标) => [坐标.retryId, 坐标.retry, 坐标.maxRetries])).toEqual([
+                ['id-1', 1, 5],
+                ['id-1', 2, 5],
+            ])
+        } finally {
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
+    it('always 模式带 maxRetries 的形态不在可修范围内（平台写入器不产生它）', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            await writeFile(文件, 编码会话文件([
+                { type: 'session', id: 's1' },
+                {
+                    type: 'llm/retry',
+                    data: {
+                        turn: 1,
+                        step: 7,
+                        provider: 'command-code',
+                        policyKey: 'k',
+                        mode: 'always',
+                        retryId: 'id-1',
+                        retry: 1,
+                        maxRetries: 3,
+                    },
+                },
+            ]))
+
+            const 结果 = await repairSessionFile(文件, 用假校验器())
+            expect(结果.status).toBe('unrepairable')
+            expect(结果.reason).toContain('always mode must omit maxRetries')
+            expect(结果.changedCategories).toEqual([])
+        } finally {
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
+    it('normal 形状的合法重试链报「无需修复」', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            await writeFile(文件, 编码会话文件([
+                { type: 'session', id: 's1' },
+                带限额重试事件('id-1', 1, 5),
+                重试启动事件(1, 7, 'id-1', 1),
+            ]))
+
+            const 结果 = await repairSessionFile(文件, 用假校验器())
+            expect(结果.status).toBe('intact')
+            expect(结果.changedCategories).toEqual([])
         } finally {
             await rm(目录, { recursive: true, force: true })
         }

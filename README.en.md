@@ -16,7 +16,7 @@
   <a href="https://github.com/thissensen/dsh-harden">GitHub</a>
 </p>
 
-> **Status**: guard rules H1, H2 and H3 are all implemented; **all 100 tests pass**, typecheck is clean, and the build succeeds.
+> **Status**: guard rules H1, H2 and H3 are all implemented; **all 184 tests pass**, typecheck is clean, and the build succeeds.
 
 ## What it solves
 
@@ -35,14 +35,16 @@ In one sentence: **an explicit failure is fine; a silent stop is not.**
 
 ## Features
 
-- **Continue after a failed tool call** — when a tool call fails and the framework still treats the turn as complete, a note is injected so the model retries.
+- **Continue after a failed tool call** — when a tool call fails and the framework still treats the turn as complete, a note is injected so the model retries. (needs **Failure warning prefixes** filled in on the settings page, otherwise this rule stays off)
 - **Recover a turn that ends without any reply text** — when the last step has only reasoning, the turn is pulled back for one more step.
 - **Continue after a network interruption** — after the official retry budget runs out, the plugin adds extra attempts for the failure kinds you list.
 - **Background task tool** — gives the model a `job_background` tool to run long commands in the background without blocking the turn.
-- **Unbounded and switchable** — no cap on injections, and every rule has its own toggle.
+- **Unbounded and switchable** — no cap on injections, and every guard rule has its own toggle (the write-side protection is always on).
 - **Never touches your config or patches the platform** — switches live in the platform `settings`; it only listens to public events and patches no `@deepseek-ai/*` package.
 - **One-click repair of corrupted session logs** — when a session log gets corrupted and the platform refuses to open the history, the settings page scans and repairs it in one click.
 - **Automatic context compaction** — once the conversation grows past a threshold, the older history is condensed into a summary; the UI reuses the platform's own notice.
+- **Aggregate subagent notices** — when several subagents finish in parallel, their completion notices are held back and delivered together as one message once every subagent is done, instead of waking the model one by one. Off by default.
+- **Automatic repair for broken subagent sessions** — fixes the case where a session suddenly refuses to open while subagents are running. The plugin corrects non-conforming retry events before they are stored; a light note appears at the end of the turn when a correction happens. It is **always on and has no toggle**.
 
 ## Problem screenshots
 
@@ -120,15 +122,17 @@ dsh plugin --profile web add link:<absolute path to this repo>
 
 ## Settings
 
-The settings page lives under the "DSH Optimize" section and has six cards:
+The settings page lives under the "DSH Optimize" section and has **eight** cards:
 
 | Card | Description |
 |---|---|
-| **Continue after a failed tool call** | Toggle. A swallowed tool-call failure that still ends the turn as "complete" causes a note to be injected so the model retries. Also has **Failure warning prefixes**: the fixed opening of the platform warning, matched per line at the start, case-sensitive. **Empty by default — empty means rule H1 stays off.** Example: `⚠ Could not execute tool`. |
+| **Continue after a failed tool call** | Toggle. A swallowed tool-call failure that still ends the turn as "complete" causes a note to be injected so the model retries. Also has **Failure warning prefixes**: the fixed opening of the platform warning, matched against the start of the whole reply text (lines are **not** split), case-sensitive. **Empty by default — empty means rule H1 stays off.** Example: `⚠ Could not execute tool`. |
 | **Turn ends without a reply** | Toggle. A turn whose last step has only reasoning is pulled back for one more step. |
 | **Continue after a network interruption** | Toggle plus **Network retry count** (0–99 extra attempts after the official retries run out; 0 disables it) and **Failures that trigger a retry** (failure codes `SERVER` / `RATE_LIMIT` / `TIMEOUT` / `TRANSPORT` and HTTP statuses `502` / `429`; empty retries nothing). |
+| **Automatic context compaction** | Toggle plus **Compaction scope** (a dropdown: All / Main only / Subagents only — default All), **Trigger threshold** (e.g. `200K` / `1M` / `100000`; the plugin default is `200K`) and **Summary instruction** (the instruction sent to the model when a summary is generated). Once the session exceeds the threshold, an earlier stretch of history is condensed into a summary and the platform's own "context compacted" notice is shown. |
 | **Background task tool** | Toggle. When on, the model can start background commands with `job_background` and manage them with `job_list` / `job_output` / `job_kill`. When off, the tool disappears. |
-| **Automatic context compaction** | Toggle plus **Compaction scope** (a dropdown: All / Main only / Subagents only — default All), **Trigger threshold** (e.g. `200K` / `1M` / `100000`; the platform default is `200K`) and **Summary instruction** (the instruction sent to the model when a summary is generated). Once the session exceeds the threshold, an earlier stretch of history is condensed into a summary and the platform's own "context compacted" notice is shown. |
+| **Aggregate subagent notices** | Toggle, **off by default**. When several subagents finish in parallel, their completion notices are held back and delivered together as one message once every subagent is done, instead of waking the model one by one. |
+| **Automatic repair for broken subagent sessions** | **No toggle — always on.** When the platform is about to store a non-conforming retry event, the plugin corrects it before it is written, so the session never becomes unopenable. A light note appears at the end of the turn when a correction happens. |
 | **Repair corrupted sessions** | Scan button. Scans every session log and repairs the known kinds of corruption, so a history that refuses to open becomes usable again. |
 
 > ⚠️ **The one that matters most**: **"Failure warning prefixes" is empty by default, so leaving it blank after install means rule H1 is off.** Open the settings page and paste the fixed beginning of your platform's warning text (example: `⚠ Could not execute tool`).
@@ -140,7 +144,7 @@ pnpm install
 node scripts/link-deps.mjs    # link host packages into this project's node_modules
 pnpm build                     # tsc (host) + vite (client)
 pnpm typecheck                 # type check only
-pnpm test                      # vitest, 100 tests
+pnpm test                      # vitest, 184 tests
 ```
 
 ## Design

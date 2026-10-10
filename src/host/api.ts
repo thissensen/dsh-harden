@@ -17,6 +17,7 @@ import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import { repairSessionFile, scanSessionFiles } from './session-repair.js'
+import { 获取拦截记录 } from './retry-intercept.js'
 import type { Ctx, HardenConfig, Logger, WebServerService } from './types.js'
 
 /** 本插件的路由前缀。 */
@@ -289,6 +290,21 @@ function handleGetConfig(res: ServerResponse, deps: ApiDeps): void {
 }
 
 /**
+ * `GET /retry-intercepts?session=<会话ID>`：把该会话上被归一过的重试链交给设置页。
+ *
+ * **为什么缺失与未知都回空数组。** 「这个会话没发生过修正」与「这个 id 谁都不认识」对界面是
+ * 同一件事（没什么可展示的），不为它单开错误分支，也就不需要新的 locale 词条。
+ *
+ * @param url - 已解析的请求 URL（会话 id 走 query）。
+ * @param res - Node 的响应对象。
+ */
+function handleGetRetryIntercepts(url: URL, res: ServerResponse): void {
+    const 会话ID = url.searchParams.get('session') ?? ''
+
+    json(res, 200, { ok: true, 记录组: 获取拦截记录(会话ID) })
+}
+
+/**
  * `POST /config`：把设置页发来的配置写回平台 settings。
  *
  * 字段只有一个，但类型校验照做：手改请求、老客户端都可能发来别的东西，
@@ -529,6 +545,12 @@ export function mountApi(ctx: Ctx, logger: Logger, deps: ApiDeps): void {
 
             if (req.method === 'GET' && path === `${API_PREFIX}/config`) {
                 handleGetConfig(res, deps)
+                return
+            }
+
+            if (req.method === 'GET' && path === `${API_PREFIX}/retry-intercepts`) {
+                // GET 走读围栏（上面那道），不需要写端点的自定义头与 content-type。
+                handleGetRetryIntercepts(url, res)
                 return
             }
 

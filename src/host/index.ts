@@ -42,6 +42,7 @@ import type { ConfigScope } from './api.js'
 import { mountJobBackground } from './job-background.js'
 import { mountContextCompaction } from './compaction.js'
 import { mountSubagentAggregation } from './subagent-aggregate.js'
+import { mountRetryIntercept } from './retry-intercept.js'
 import { SETTINGS_NAMESPACE } from './config.js'
 
 /** 平台按这个 id 认配置 schema（`Config` 是平台侧的约定名，见 config.ts）。 */
@@ -99,6 +100,7 @@ export function apply(ctx: Ctx, config: unknown): void {
     mountContextCompaction(ctx, logger, () => current())
     mountJobBackground(ctx, logger, () => current().backgroundJobTool)
     mountSubagentAggregation(ctx, logger, () => current())
+    mountRetryIntercept(ctx, logger)
 }
 
 /**
