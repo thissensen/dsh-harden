@@ -2,12 +2,19 @@
  * 重试链写入拦截器的单元测试。
  *
  * 被测对象是 `src/host/retry-intercept.ts`：包住 `session.append` 的写入拦截器、两个安装点
- * （`agent/created` / `agent/pre-step`）与拦截记录存储。会话桩**记下每一次落到原始 append 的
- * 调用**，断言直接验真正落到的数据，不 mock 一圈再断言 mock。
+ * （`agent/created` / `agent/pre-step`）、拦截记录的内存账本与落进会话日志的 `plugin:` 记录，以及只读
+ * 端点用的合并读取（内存 ∪ 日志）。会话桩**记下每一次落到原始 append 的调用**，断言直接验真正落到的
+ * 数据，不 mock 一圈再断言 mock。
+ *
+ * **只替掉「平台包在哪」那一层**（`session-repair.js` 的 `加载平台包组`）：记录通道那一步读的是磁盘上的
+ * 真平台包（只有装了 DSH 的机器才有），换成假模块后，写侧断言假通道真收到的参数、读侧读假通道真追加进
+ * 会话桩事件组的记录——两侧都落在本模块的真实行为上。
  *
  * 事件形状取自真机样本（子代理会话 dfd3eb08-79dd-42ea-ae47-99fba10cc4e0：turn 1 / step 7 /
  * provider command-code，同链两条 retry=1 且 maxRetries=1），但事件数据全部内联构造，
  * 不读任何真实会话文件、不写死任何绝对路径。
+ *
+ * 冷读路径（会话查询面）由用例直接给桩——平台读一份「没打开过」的会话日志走的是那个服务，不是会话对象。
  *
  * 最后一组用**真平台校验器**回放同一序列（负对照：不装拦截器必被拒；正对照：装了之后过校验）。
  * 平台包只有真机才有（CI 上没有），拿不到就整组跳过——与会话修复用例同一条定位策略。
@@ -15,10 +22,55 @@
  * @module dsh-harden/tests/retry-intercept
  */
 
-import { describe, expect, it } from 'vitest'
-import type { Ctx, Logger } from '../src/host/types.js'
-import { mountRetryIntercept, 获取拦截记录 } from '../src/host/retry-intercept.js'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Ctx, Logger, SessionEventLike, 会话查询面 } from '../src/host/types.js'
+import { mountRetryIntercept, 获取拦截记录, 获取全部拦截记录 } from '../src/host/retry-intercept.js'
 import { loadPlatformValidator, type SessionValidator } from '../src/host/session-repair.js'
+
+/**
+ * 假平台记录通道：`appendPluginRecord` 收下写进日志的记录，`pluginRecordOf` 只作探测面
+ * （`plugin-record.ts` 要求这两个都是函数才启用这条通道）。写出去的记录会**追加进对应会话桩的事件组**
+ * ——平台真把记录写进会话日志之后，会话桩的 `snapshotEvents` 就读得到它，合并读取的断言因此落在真实
+ * 行为上，而不是断言 mock。
+ */
+const 平台桩 = vi.hoisted(() => {
+    /** 落进假通道的调用，形如 `[会话, 记录名, 数据]`。 */
+    const 落盘调用组: unknown[][] = []
+    /** 用例可切：模拟平台的 append 重入保护（另一次 append 正在发布时调 appendPluginRecord 会抛）。 */
+    const 状态 = { 是否抛错: false }
+    /** 会话桩的事件组：假通道按会话对象往里追加记录。 */
+    const 会话事件组 = new WeakMap<object, unknown[]>()
+
+    const 模块 = {
+        appendPluginRecord(会话: unknown, 记录名: string, 数据: unknown): number {
+            if (状态.是否抛错) throw new Error('session append cannot reenter while another append is being published')
+
+            落盘调用组.push([会话, 记录名, 数据])
+
+            const 事件组 = 会话事件组.get(会话 as object)
+            if (事件组 !== undefined) {
+                // seq 接着已有事件往下排（会话桩按 seq 筛事件，与会话日志的读法一致）。
+                事件组.push({ type: 记录名, seq: 事件组.length, ignorable: true, data: 数据 })
+            }
+
+            return 落盘调用组.length
+        },
+        pluginRecordOf: (): undefined => undefined,
+    }
+
+    return { 模块, 落盘调用组, 状态, 会话事件组 }
+})
+
+vi.mock('../src/host/session-repair.js', async (importOriginal) => {
+    // 只换掉「平台包在哪」这一步（真平台包只有装了 DSH 的机器才有），其余照原样——下面的回放用例仍用
+    // 原始的 loadPlatformValidator 取真校验器。
+    const 原模块 = await importOriginal<typeof import('../src/host/session-repair.js')>()
+
+    return {
+        ...原模块,
+        加载平台包组: (): Record<string, unknown> => ({ 'dsh-session': 平台桩.模块 }),
+    }
+})
 
 /** 真机样本里的链坐标（四元组里的前三个 + policyKey 全量）。 */
 const 真机链 = {
@@ -45,25 +97,81 @@ interface 落盘调用 {
     选项组: unknown[]
 }
 
-/** 会话桩：带拦截器要的写入面与会话头；`append` 只记录调用，返回一个像真 append 的 seq。 */
+/** 会话桩：带拦截器要的写入面与会话头，另带读取面（只读端点按它读会话日志里的记录）。 */
 interface 会话桩 {
     header: { id?: string }
     append(类型: string, 数据: unknown, ...选项组: unknown[]): unknown
+    snapshotEvents(起点?: number): readonly SessionEventLike[]
 }
 
-/** 造一个记录调用的会话桩；不给会话 id 时头里就真的没有 id（覆盖「id 读不到」的分支）。 */
-function 造会话桩(会话ID?: string): { 会话: 会话桩; 落盘组: 落盘调用[] } {
+/** 造一条本插件的日志记录事件（形状照 `plugin-record.ts` 写进会话日志的那份）。 */
+function 造记录事件(seq: number, 字段: { 回合: number; 步: number; 序号: number; 时间戳: number }): SessionEventLike {
+    return {
+        type: 'plugin:dsh-harden/retry-intercept',
+        seq,
+        ignorable: true,
+        data: { 数据版本: 1, 回合: 字段.回合, 步: 字段.步, 序号: 字段.序号, 时间戳: 字段.时间戳 },
+    }
+}
+
+/**
+ * 造一个平台会话查询桩（冷读路径那一层）。
+ *
+ * `readSession` 记下每次被问的会话 id——用例据此断言「读了几次、问的是哪个 id」；每次都全量回同一组事件，
+ * 逐条自验由被测模块自己做。
+ *
+ * @param 事件组 - 该会话「日志」里的事件。
+ */
+function 造会话查询(事件组: readonly SessionEventLike[]): { 查询: 会话查询面; 读入ID组: string[] } {
+    const 读入ID组: string[] = []
+    const 查询: 会话查询面 = {
+        async readSession(会话ID: string): Promise<{ events: readonly SessionEventLike[] }> {
+            读入ID组.push(会话ID)
+            return { events: 事件组 }
+        },
+    }
+
+    return { 查询, 读入ID组 }
+}
+
+/**
+ * 造一个记录调用的会话桩。
+ *
+ * @param 会话ID - 不给时头里就真的没有 id（覆盖「id 读不到」的分支）。
+ * @param 事件组 - 会话日志里已有的事件；假记录通道往里追加本插件写进的记录。
+ */
+function 造会话桩(会话ID?: string, 事件组: SessionEventLike[] = []): {
+    会话: 会话桩
+    落盘组: 落盘调用[]
+    进入时日志记录数: number[]
+    事件组: SessionEventLike[]
+    抛错控制: { 是否抛错: boolean }
+} {
     const 落盘组: 落盘调用[] = []
+    // 每次 append 进来时日志里已有多少条记录：「记账写在原 append 返回之后」靠它钉。
+    const 进入时日志记录数: number[] = []
+    const 抛错控制 = { 是否抛错: false }
+
     const 会话: 会话桩 = {
         header: 会话ID === undefined ? {} : { id: 会话ID },
 
         append(类型: string, 数据: unknown, ...选项组: unknown[]): unknown {
             落盘组.push({ 类型, 数据, 选项组 })
+            进入时日志记录数.push(平台桩.落盘调用组.length)
+            // 用例可切：模拟平台拒收这次写入。桩在抛之前已记下调用，用来断言改写确实交给了原 append。
+            if (抛错控制.是否抛错) throw new Error('平台拒绝写入（用例构造）')
+
             return { seq: 落盘组.length }
+        },
+
+        snapshotEvents(起点 = 0): readonly SessionEventLike[] {
+            return 事件组.filter((事件) => (事件.seq ?? 0) >= 起点)
         },
     }
 
-    return { 会话, 落盘组 }
+    平台桩.会话事件组.set(会话, 事件组)
+
+    return { 会话, 落盘组, 进入时日志记录数, 事件组, 抛错控制 }
 }
 
 /** 日志桩收下的全部行（info 与 warn 混在一起）；用例按关键词断言留痕，不按顺序。 */
@@ -112,9 +220,20 @@ const 测试环境 = 造上下文桩()
 
 mountRetryIntercept(测试环境.ctx, 日志桩)
 
-/** 造一个会话桩，并按生产路径（主安装点 agent/created）把它装上拦截器。 */
-async function 装会话(会话ID?: string): Promise<{ 会话: 会话桩; 落盘组: 落盘调用[] }> {
-    const 桩 = 造会话桩(会话ID)
+/** 用例之间清掉假记录通道的调用账与抛错开关：会话桩是各用例自造的，只有这份模块级状态要重置。 */
+beforeEach(() => {
+    平台桩.落盘调用组.length = 0
+    平台桩.状态.是否抛错 = false
+})
+
+/**
+ * 造一个会话桩，并按生产路径（主安装点 agent/created）把它装上拦截器。
+ *
+ * @param 会话ID - 会话 id；不给时头里没有 id。
+ * @param 事件组 - 会话日志里已有的事件（模拟进程重启后重开会话：日志里早就有本插件的记录）。
+ */
+async function 装会话(会话ID?: string, 事件组: SessionEventLike[] = []): Promise<ReturnType<typeof 造会话桩>> {
+    const 桩 = 造会话桩(会话ID, 事件组)
     await 测试环境.派发('agent/created', { agent: { session: 桩.会话 }, source: 'startup' })
 
     return 桩
@@ -310,6 +429,235 @@ describe('异常边界', () => {
         // 归一不依赖会话 id：改写照常。
         expect(落盘组[1].数据).toEqual(重试数据('r1', 2, { maxRetries: 2 }))
         expect(日志行组.some((行) => 行.includes('未记入拦截记录'))).toBe(true)
+    })
+})
+
+describe('拦截记录落日志（原 append 返回之后）', () => {
+    it('改写落盘成功后写一条日志记录：参数逐字段正确，且发生在原 append 返回之后', async () => {
+        const 桩 = await 装会话('日志记录-1')
+
+        桩.会话.append('llm/retry', 重试数据('r1', 1, { maxRetries: 1 }))
+        桩.会话.append('llm/retry-started', 启动数据('r1', 1))
+        桩.会话.append('llm/retry', 重试数据('r2', 1, { maxRetries: 1 }))
+        桩.会话.append('llm/retry-started', 启动数据('r2', 1))
+
+        const 内存记录组 = 获取拦截记录('日志记录-1')
+        expect(内存记录组).toHaveLength(1)
+
+        // 第三条（被改写的那条）跑原 append 时日志里一条记录都还没有 ⇒ 记账确实排在它返回之后。
+        expect(桩.进入时日志记录数[2]).toBe(0)
+
+        // 只写一条：`llm/retry-started` 的同步改写是同一处修正的另一半，不单独记。
+        const 期望数据 = {
+            数据版本: 1,
+            回合: 真机链.turn,
+            步: 真机链.step,
+            序号: 2,
+            时间戳: 内存记录组[0].时间戳,
+        }
+        expect(平台桩.落盘调用组).toEqual([[桩.会话, 'plugin:dsh-harden/retry-intercept', 期望数据]])
+    })
+
+    it('没发生改写（合法链）时零调用', async () => {
+        const 桩 = await 装会话('日志记录-未归一-1')
+        const 合法覆盖 = { policyKey: '["harden-fallback"]', delayMs: 0, maxRetries: 5 }
+
+        桩.会话.append('llm/retry', 重试数据('h3-链', 1, 合法覆盖))
+        桩.会话.append('llm/retry', 重试数据('h3-链', 2, 合法覆盖))
+
+        expect(获取拦截记录('日志记录-未归一-1')).toEqual([])
+        expect(平台桩.落盘调用组).toEqual([])
+    })
+
+    it('原 append 抛错时：不写日志记录、不写内存账本，异常照旧往外抛', async () => {
+        const 桩 = await 装会话('日志记录-落盘失败-1')
+
+        桩.会话.append('llm/retry', 重试数据('r1', 1, { maxRetries: 99 }))
+        桩.抛错控制.是否抛错 = true
+
+        expect(() => 桩.会话.append('llm/retry', 重试数据('r2', 99, { maxRetries: 99 }))).toThrowError(
+            '平台拒绝写入（用例构造）',
+        )
+
+        // 改写算出来了、也交给了原 append（桩在抛之前记下这次调用），但没落盘就两处都不该有记录。
+        expect(桩.落盘组).toHaveLength(2)
+        expect(桩.落盘组[1].数据).toEqual(重试数据('r1', 2, { maxRetries: 99 }))
+        expect(获取拦截记录('日志记录-落盘失败-1')).toEqual([])
+        expect(平台桩.落盘调用组).toEqual([])
+    })
+
+    it('写日志记录抛错（平台重入保护）时：落盘数据照旧、内存账本仍有该记录', async () => {
+        const 桩 = await 装会话('日志记录-写失败-1')
+
+        桩.会话.append('llm/retry', 重试数据('r1', 1, { maxRetries: 99 }))
+        平台桩.状态.是否抛错 = true
+        桩.会话.append('llm/retry', 重试数据('r2', 99, { maxRetries: 99 }))
+
+        expect(桩.落盘组[1].数据).toEqual(重试数据('r1', 2, { maxRetries: 99 }))
+        expect(获取拦截记录('日志记录-写失败-1')).toHaveLength(1)
+        expect(日志行组.some((行) => 行.includes('拦截记录写入会话日志失败'))).toBe(true)
+    })
+})
+
+describe('获取全部拦截记录（内存账本 ∪ 会话日志）', () => {
+    it('同一条修正两处同形时只回一条', async () => {
+        const 桩 = await 装会话('合并-去重-1')
+
+        桩.会话.append('llm/retry', 重试数据('r1', 1, { maxRetries: 99 }))
+        桩.会话.append('llm/retry', 重试数据('r2', 99, { maxRetries: 99 }))
+
+        const 内存记录组 = 获取拦截记录('合并-去重-1')
+        expect(内存记录组).toHaveLength(1)
+        // 写侧两处都写了：日志里那条与内存那条四字段全等 ⇒ 合并结果只剩一条。
+        expect(桩.事件组).toHaveLength(1)
+        expect(await 获取全部拦截记录('合并-去重-1')).toEqual(内存记录组)
+    })
+
+    it('同回合、同步、同序号但时间戳不同的两条不合并；返回按时间戳升序', async () => {
+        // 会话日志里已经有的两条（模拟进程重启后重开会话）：坐标三元组一样、时间戳不同 = 两处修正。
+        const 事件组: SessionEventLike[] = [
+            造记录事件(0, { 回合: 1, 步: 7, 序号: 2, 时间戳: 9 }),
+            造记录事件(1, { 回合: 1, 步: 7, 序号: 2, 时间戳: 8 }),
+        ]
+        await 装会话('合并-三元组-1', 事件组)
+
+        expect(await 获取全部拦截记录('合并-三元组-1')).toEqual([
+            { 回合: 1, 步: 7, 序号: 2, 时间戳: 8 },
+            { 回合: 1, 步: 7, 序号: 2, 时间戳: 9 },
+        ])
+    })
+
+    it('两源合计超过 50 条时只回最近 50 条', async () => {
+        const 事件组: SessionEventLike[] = []
+        // 倒着放进日志：断言排序按时间戳升序，不是按日志顺序。
+        for (let 序号 = 30; 序号 >= 1; 序号 -= 1) {
+            事件组.push(造记录事件(事件组.length, { 回合: 1, 步: 序号, 序号: 序号, 时间戳: 1000 + 序号 }))
+        }
+        const 桩 = await 装会话('合并-截断-1', 事件组)
+
+        // 25 次改写 ⇒ 内存账本 25 条（时间戳晚于日志里那 30 条），日志里也各追加一条。
+        桩.会话.append('llm/retry', 重试数据('截断链', 1, { maxRetries: 99 }))
+        for (let 次 = 0; 次 < 25; 次 += 1) 桩.会话.append('llm/retry', 重试数据('截断链', 99, { maxRetries: 99 }))
+
+        const 记录组 = await 获取全部拦截记录('合并-截断-1')
+        expect(记录组).toHaveLength(50)
+        // 30 条日志 + 25 条内存 = 55 条 ⇒ 丢掉最早的 5 条（时间戳 1001..1005）。
+        expect(记录组[0].时间戳).toBe(1006)
+        expect(记录组[49].时间戳).toBe(获取拦截记录('合并-截断-1')[24].时间戳)
+    })
+
+    it('会话对象不在注册表里（注册表装满，最早的会话被淘汰）时只回内存账本', async () => {
+        // 注册表与记录存储各有 50 个会话的上限、各自独立淘汰：先把注册表装满把最早的挤出去，再让最早的
+        // 那个发生一次改写——此时内存账本有它、注册表里没有它（进程重启后尚未恢复的会话同理）。
+        const 最早的 = await 装会话('淘汰-对象-0', [造记录事件(0, { 回合: 9, 步: 9, 序号: 9, 时间戳: 9 })])
+        for (let 序 = 1; 序 <= 50; 序 += 1) await 装会话(`淘汰-对象-${序}`)
+
+        最早的.会话.append('llm/retry', 重试数据('淘汰链', 1, { maxRetries: 99 }))
+        最早的.会话.append('llm/retry', 重试数据('淘汰链', 99, { maxRetries: 99 }))
+
+        const 内存记录组 = 获取拦截记录('淘汰-对象-0')
+        expect(内存记录组).toHaveLength(1)
+        // 只回内存账本：它日志里那条（还有本次改写写进去的那条）读不到，也不该凭空出现。
+        expect(await 获取全部拦截记录('淘汰-对象-0')).toEqual(内存记录组)
+    })
+
+    it('注册表已满时用同 id 的新会话对象重装：不淘汰别人，只有新增槽位才挤掉最早进入的那个', async () => {
+        // 最早进入的会话带一条日志记录：它在不在注册表里，靠这条记录读不读得出来分辨。
+        await 装会话('重装-最早-1', [造记录事件(0, { 回合: 3, 步: 4, 序号: 5, 时间戳: 7 })])
+        // 再装 49 个别的会话把注册表填满——此后注册表里就是这 50 个，最早那个排在最前。
+        for (let 序 = 1; 序 <= 49; 序 += 1) await 装会话(`重装-填满-${序}`)
+
+        // 同 id 的**新会话对象**再走一遍生产路径：这是覆盖已有槽位，不占新位置。
+        await 装会话('重装-填满-1')
+
+        // 覆盖不淘汰别人 ⇒ 最早那个仍在注册表里，它日志里的记录照旧读得到。
+        expect(await 获取全部拦截记录('重装-最早-1')).toEqual([{ 回合: 3, 步: 4, 序号: 5, 时间戳: 7 }])
+
+        // 容量没被覆盖缩水 ⇒ 下一个**新**会话进来时才挤掉最早进入的那个（淘汰时机只在新增槽位）。
+        await 装会话('重装-挤位-1')
+        expect(await 获取全部拦截记录('重装-最早-1')).toEqual([])
+    })
+})
+
+/**
+ * 冷读路径：注册表里没有该会话（「查看会话」不创建 agent、进程重启后还没恢复）时，靠平台的
+ * `ctx.sessionQuery.readSession` 直接读日志里的记录。
+ */
+describe('获取全部拦截记录（冷读会话日志）', () => {
+    it('注册表里没有该会话时冷读日志：逐条跳过非记录，结果按时间戳升序', async () => {
+        const { 查询, 读入ID组 } = 造会话查询([
+            { type: 'turn/start', seq: 0, data: { turn: 11 } },
+            造记录事件(1, { 回合: 11, 步: 28, 序号: 1, 时间戳: 1750000000000 }),
+            造记录事件(2, { 回合: 11, 步: 28, 序号: 1, 时间戳: 3 }),
+        ])
+
+        expect(await 获取全部拦截记录('冷读-只读-1', 查询)).toEqual([
+            { 回合: 11, 步: 28, 序号: 1, 时间戳: 3 },
+            { 回合: 11, 步: 28, 序号: 1, 时间戳: 1750000000000 },
+        ])
+        expect(读入ID组).toEqual(['冷读-只读-1'])
+    })
+
+    it('会话查询抛错或返回形状不符时回空数组、不抛', async () => {
+        const 抛错查询: 会话查询面 = {
+            async readSession(): Promise<{ events: readonly SessionEventLike[] }> {
+                throw new Error('会话日志校验不过（用例构造）')
+            },
+        }
+        const 形状不符查询 = {
+            async readSession(): Promise<unknown> {
+                return { events: '不是数组' }
+            },
+        } as unknown as 会话查询面
+
+        expect(await 获取全部拦截记录('冷读-抛错-1', 抛错查询)).toEqual([])
+        expect(await 获取全部拦截记录('冷读-形状-1', 形状不符查询)).toEqual([])
+    })
+
+    it('冷读结果有 30 秒缓存：连续两次调用只读一次日志，返回的又是副本', async () => {
+        const { 查询, 读入ID组 } = 造会话查询([造记录事件(0, { 回合: 2, 步: 3, 序号: 1, 时间戳: 5 })])
+
+        const 首次 = await 获取全部拦截记录('冷读-缓存-1', 查询)
+        const 二次 = await 获取全部拦截记录('冷读-缓存-1', 查询)
+
+        expect(读入ID组).toHaveLength(1)
+        expect(二次).toEqual(首次)
+
+        二次[0].序号 = 99
+        expect(await 获取全部拦截记录('冷读-缓存-1', 查询)).toEqual(首次)
+    })
+
+    it('缓存 30 秒后过期：过期那一次重新读日志', async () => {
+        const { 查询, 读入ID组 } = 造会话查询([造记录事件(0, { 回合: 3, 步: 1, 序号: 1, 时间戳: 5 })])
+        const 起点时刻 = 1_700_000_000_000
+        const 时钟 = vi.spyOn(Date, 'now').mockReturnValue(起点时刻)
+
+        try {
+            await 获取全部拦截记录('冷读-过期-1', 查询)
+            时钟.mockReturnValue(起点时刻 + 29_999)
+            await 获取全部拦截记录('冷读-过期-1', 查询)
+            expect(读入ID组).toHaveLength(1)
+
+            时钟.mockReturnValue(起点时刻 + 30_000)
+            await 获取全部拦截记录('冷读-过期-1', 查询)
+            expect(读入ID组).toHaveLength(2)
+
+        } finally {
+            时钟.mockRestore()
+        }
+    })
+
+    it('注册表命中该会话时不冷读（对象上的实时读优先）', async () => {
+        const { 查询, 读入ID组 } = 造会话查询([造记录事件(0, { 回合: 9, 步: 9, 序号: 9, 时间戳: 9 })])
+        const 桩 = await 装会话('冷读-实时优先-1')
+
+        桩.会话.append('llm/retry', 重试数据('冷读链', 1, { maxRetries: 99 }))
+        桩.会话.append('llm/retry', 重试数据('冷读链', 99, { maxRetries: 99 }))
+
+        const 内存记录组 = 获取拦截记录('冷读-实时优先-1')
+        expect(内存记录组).toHaveLength(1)
+        expect(await 获取全部拦截记录('冷读-实时优先-1', 查询)).toEqual(内存记录组)
+        expect(读入ID组).toEqual([])
     })
 })
 

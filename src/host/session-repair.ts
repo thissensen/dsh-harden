@@ -32,6 +32,7 @@
  *
  * 派生出的目录里必须同时存在 `dsh-session-format-v3-to-v4` 与 `dsh-session`，缺一则换下一个
  * 候选。平台包只在真正要校验时才加载——开发与 CI 环境没有它们，顶层静态 import 会让整个模块挂掉。
+定位与加载收敛在 `加载平台包组`（`plugin-record.ts` 的 `plugin:` 记录通道复用它，只换目标包名）。
  *
  * @module dsh-harden/session-repair
  */
@@ -57,7 +58,7 @@ const CHECKSUM_OPTIONS = { params: { [constants.ZSTD_c_checksumFlag]: 1 } }
 const 首选包名 = '@deepseek-ai/dsh-session-persistence-jsonl'
 
 /** 锚点包名：`link:` 装法下只有它会被链进插件的 node_modules，见 `.harness/05-坑册.md` 坑 22。 */
-const 锚点包名 = '@deepseek-ai/dsh-agent'
+export const 锚点包名 = '@deepseek-ai/dsh-agent'
 
 /** 派生出的平台包目录里必须同时存在的两个包，见 `.harness/05-坑册.md` 坑 22。 */
 const 必需包名组 = ['dsh-session-format-v3-to-v4', 'dsh-session']
@@ -436,24 +437,37 @@ function 展开节点内序号范围(node: unknown, 字段名: string): boolean 
     return 有改动
 }
 
+/** 一个平台包候选：从它出发能定位到平台的 `@deepseek-ai` 目录。 */
+export interface 平台包候选 {
+    /** 候选包名（完整 scope 名）。 */
+    包名: string
+    /** 定位失败时写进错误原因的说明，如「首选包 @deepseek-ai/…」。 */
+    说明: string
+}
+
 /**
- * 用「两候选定位」加载平台校验器。
+ * 两候选定位并加载平台包组。
  *
- * 按候选顺序逐个试：解析出入口路径 → 从入口路径派生 `@deepseek-ai` 目录 → 确认目录里有
- * 两个必需包 → 用入口路径建 require 加载 `dsh-session-format-v3-to-v4` 与 `dsh-session`。
- * 一个候选失败就把原因累积成一行文本、继续下一个；两个都失败时把两次原因拼成一条错误抛出。
+ * 按候选顺序逐个试：解析出入口路径 → 从入口路径派生 `@deepseek-ai` 目录 → 确认目录里有全部必需包
+ * → 用入口路径建 require 加载它们。一个候选的任一步失败就把原因累积成一行文本、继续下一个；全部候选
+ * 都失败时把原因拼成一条错误抛出。定位结果**不写死任何安装位置**。
  *
- * 两个包都是 CJS，用同步 require 加载。pnpm 的符号链接会让「用包入口路径建 createRequire
- * 再 resolve 同级包」失败（真实路径的 node_modules 链里没有同级包的链接），故改为从入口
- * 路径直接派生平台包目录。
+ * 包都是 CJS，用同步 require 加载。pnpm 的符号链接会让「用包入口路径建 createRequire 再 resolve 同级
+ * 包」失败（真实路径的 node_modules 链里没有同级包的链接），故改为从入口路径直接派生平台包目录（坑 22）。
  *
+ * `loadPlatformValidator`（校验器）与 `plugin-record.ts`（`plugin:` 记录通道）共用这一段。
+ *
+ * @param 必需包名组 - 派生出的 `@deepseek-ai` 目录下必须存在、且要加载的一级目录名（不是完整包名），
+ *   同时是返回映射的键——混成完整包名会去查 `@deepseek-ai/@deepseek-ai/…`，永远找不到。
+ * @param 候选组 - 按顺序试的候选包。
  * @param 解析 - 包名到入口路径的解析器；缺省用插件自己的 require。测试注入假的平台包目录。
+ * @returns 包名 → 模块对象的映射。
  */
-export function loadPlatformValidator(解析: (包名: string) => string = (包名) => 插件require.resolve(包名)): SessionValidator {
-    const 候选组 = [
-        { 包名: 首选包名, 说明: `首选包 ${首选包名}` },
-        { 包名: 锚点包名, 说明: `锚点包 ${锚点包名}` },
-    ]
+export function 加载平台包组(
+    必需包名组: readonly string[],
+    候选组: readonly 平台包候选[],
+    解析: (包名: string) => string = (包名) => 插件require.resolve(包名),
+): Record<string, unknown> {
     const 失败原因组: string[] = []
 
     for (const 候选 of 候选组) {
@@ -468,20 +482,14 @@ export function loadPlatformValidator(解析: (包名: string) => string = (包�
                 if (existsSync(join(平台包目录, 必需包名)) === false) throw new Error(`候选目录里没有 ${必需包名}`)
             }
 
-            const 锚点require = createRequire(入口路径)
-            const v3to4 = 锚点require(join(平台包目录, 'dsh-session-format-v3-to-v4')) as {
-                restoreReleasedV4Artifact: (artifact: unknown, knownTypes: unknown) => void
+            const 加载 = createRequire(入口路径)
+            const 包组: Record<string, unknown> = {}
+            for (const 必需包名 of 必需包名组) {
+                包组[必需包名] = 加载(join(平台包目录, 必需包名))
             }
-            const session模块 = 锚点require(join(平台包目录, 'dsh-session')) as { KNOWN_SESSION_EVENT_TYPES: unknown }
 
-            return {
-                validate: (header, events) => {
-                    v3to4.restoreReleasedV4Artifact(
-                        { header, events, inheritedEventCount: 0 },
-                        session模块.KNOWN_SESSION_EVENT_TYPES,
-                    )
-                },
-            }
+            return 包组
+
         } catch (err) {
             失败原因组.push(`${候选.说明}：${错误文本(err)}`)
             continue
@@ -489,6 +497,36 @@ export function loadPlatformValidator(解析: (包名: string) => string = (包�
     }
 
     throw new Error(`定位平台包目录失败 —— ${失败原因组.join('；')}`)
+}
+
+/**
+ * 用「两候选定位」加载平台校验器。
+ *
+ * 候选一是持久化包（插件装进 profile 内时是同级依赖）、候选二是锚点 `dsh-agent`（`link:` 装法下只有它
+ * 被链进插件，见坑 27）；定位与加载的细节在 `加载平台包组`。
+ *
+ * @param 解析 - 包名到入口路径的解析器；缺省用插件自己的 require。测试注入假的平台包目录。
+ */
+export function loadPlatformValidator(解析: (包名: string) => string = (包名) => 插件require.resolve(包名)): SessionValidator {
+    const 候选组: 平台包候选[] = [
+        { 包名: 首选包名, 说明: `首选包 ${首选包名}` },
+        { 包名: 锚点包名, 说明: `锚点包 ${锚点包名}` },
+    ]
+    const 包组 = 加载平台包组(必需包名组, 候选组, 解析)
+
+    const v3to4 = 包组['dsh-session-format-v3-to-v4'] as {
+        restoreReleasedV4Artifact: (artifact: unknown, knownTypes: unknown) => void
+    }
+    const session模块 = 包组['dsh-session'] as { KNOWN_SESSION_EVENT_TYPES: unknown }
+
+    return {
+        validate: (header, events) => {
+            v3to4.restoreReleasedV4Artifact(
+                { header, events, inheritedEventCount: 0 },
+                session模块.KNOWN_SESSION_EVENT_TYPES,
+            )
+        },
+    }
 }
 
 /**

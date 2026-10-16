@@ -133,16 +133,31 @@ export interface AssistantMessageLike {
 /** 一条会话事件（只声明本项目读到的字段）。 */
 export interface SessionEventLike {
     readonly type: string
+    /** 事件在会话日志里的序号；按 seq 增量续读的读法（`plugin-record.ts`）靠它推进游标。 */
+    readonly seq?: number
+    /**
+     * 「不认识就保留并跳过」的标记：平台的 `plugin:` 记录写的都是 `true`
+     * （见 `.harness/05-坑册.md` 坑 35）。
+     */
+    readonly ignorable?: boolean
     readonly data?: {
         readonly turn?: number
         readonly step?: number
         readonly message?: AssistantMessageLike
+        /** `plugin:` 记录的 data 形状由记录归属方自验，这里不逐个声明字段。 */
+        readonly [字段名: string]: unknown
     }
 }
 
 /** Session 里本项目用到的面。 */
 export interface SessionLike {
-    snapshotEvents(): readonly SessionEventLike[]
+    /**
+     * 读会话事件快照；`fromSeq` 是**含**起点的事件序号（平台语义，省略即从日志开头）。
+     *
+     * 平台已把它标 deprecated「新调用禁止」，本项目定稿不迁移、先记录（`.harness/05-坑册.md` 坑 26）：
+     * `plugin-record.ts` 按 `fromSeq` 增量续读记录，`step-reader.ts` 仍按无参全量读。
+     */
+    snapshotEvents(fromSeq?: number): readonly SessionEventLike[]
     /**
      * 追加一条会话事件（规则 H3 写重试事件用）。
      *
@@ -288,6 +303,19 @@ export interface InboxInsertedPayload {
 /** `agent/disposed` 的载荷（emit 模式：被移除的是 agent 自己，不是它的父）。 */
 export interface AgentDisposedPayload {
     readonly agent: AggregationAgentLike
+}
+
+// ── 平台会话查询服务（读一份「没打开过」的会话日志用）─────────────────────
+
+/**
+ * 平台会话查询服务（`ctx.sessionQuery`）里本项目用到的面。
+ *
+ * `readSession` 的注释原文是「Read and replay-validate one complete logical session log
+ * **without making it live**」——不开会话、不创建 agent 也能拿到完整原始事件数组（含带 `ignorable`
+ * 标记的 `plugin:` 记录）。「查看会话」正是这种没打开过的会话，模块七的只读端点靠它读日志里的记录。
+ */
+export interface 会话查询面 {
+    readSession(会话ID: string): Promise<{ events: readonly SessionEventLike[] }>
 }
 
 // ── webServer（api.ts 注册前缀路由用）─────────────────────────────────────

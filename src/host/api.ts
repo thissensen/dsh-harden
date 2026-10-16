@@ -17,8 +17,8 @@ import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import { repairSessionFile, scanSessionFiles } from './session-repair.js'
-import { 获取拦截记录 } from './retry-intercept.js'
-import type { Ctx, HardenConfig, Logger, WebServerService } from './types.js'
+import { 获取全部拦截记录 } from './retry-intercept.js'
+import type { Ctx, HardenConfig, Logger, WebServerService, 会话查询面 } from './types.js'
 
 /** 本插件的路由前缀。 */
 const API_PREFIX = '/api/dsh-harden'
@@ -60,6 +60,14 @@ export interface ApiDeps {
     getScope: () => ConfigScope | undefined
     /** 用户显式信任的 authority 清单（`readTrustedHosts` 双读 `webRuntime` / `webStartup`）；为空时只允许回环地址。 */
     trustedHosts?: string[]
+    /**
+     * 现问现取：平台的会话查询服务，读一份「没打开过」的会话日志里的记录用。
+     *
+     * **为什么不进 inject 列表**：桌面端 asar 0.2.0-rc.2 没有这个服务，把服务名写进 `inject` 会让整条
+     * 配置通路静默挂不上（`05-坑册.md` 坑 37）；`ctx.get` 缺服务时如实回 `undefined`，端点退回只有
+     * 内存账本与会话对象两条源（与采用冷读前一致）。
+     */
+    取会话查询: () => 会话查询面 | undefined
 }
 
 /** 从平台服务上摘 `trustedHosts`：服务缺席或该字段不是数组时返回 undefined（当作「没有这个来源」）。 */
@@ -93,6 +101,22 @@ export function readTrustedHosts(ctx: Ctx): string[] {
     const startupHosts = takeTrustedHosts(ctx.get('webStartup'))
 
     return startupHosts ?? []
+}
+
+/**
+ * 取平台的会话查询服务（`ctx.sessionQuery`）。
+ *
+ * **为什么必须用 `ctx.get`。** 桌面端 asar 0.2.0-rc.2 没有这个服务；把服务名写进 `inject` 会让整条
+ * 配置通路静默挂不上（`05-坑册.md` 坑 37）。`ctx.get` 不需要声明，缺服务时如实返回 `undefined`
+ * ——只读端点随之退回只有内存账本与会话对象两条源。
+ *
+ * @param ctx - 插件所在的 context（可以是 inject 回调里那个子 context）。
+ * @returns 会话查询服务；本进程没有就是 undefined。
+ */
+export function readSessionQuery(ctx: Ctx): 会话查询面 | undefined {
+    if (typeof ctx.get !== 'function') return undefined
+
+    return ctx.get<会话查询面>('sessionQuery')
 }
 
 /** 把 authority 字符串解析成 URL，失败返回 undefined。 */
@@ -328,13 +352,18 @@ function handleGetConfig(res: ServerResponse, deps: ApiDeps): void {
  * **为什么缺失与未知都回空数组。** 「这个会话没发生过修正」与「这个 id 谁都不认识」对界面是
  * 同一件事（没什么可展示的），不为它单开错误分支，也就不需要新的 locale 词条。
  *
+ * **两个来源合并。** 内存账本是本进程记下的，日志里那份是持久的（插件重启后内存账本空了、日志里那条
+ * 还在）——合并读取收敛在 `retry-intercept.ts` 的 `获取全部拦截记录`。会话没在本进程打开过时（「查看
+ * 会话」），那份日志靠 `deps.取会话查询()` 给的会话查询服务冷读，不需要 agent。
+ *
  * @param url - 已解析的请求 URL（会话 id 走 query）。
  * @param res - Node 的响应对象。
+ * @param deps - 取值依赖（读记录要现取会话查询服务）。
  */
-function handleGetRetryIntercepts(url: URL, res: ServerResponse): void {
+async function handleGetRetryIntercepts(url: URL, res: ServerResponse, deps: ApiDeps): Promise<void> {
     const 会话ID = url.searchParams.get('session') ?? ''
 
-    json(res, 200, { ok: true, 记录组: 获取拦截记录(会话ID) })
+    json(res, 200, { ok: true, 记录组: await 获取全部拦截记录(会话ID, deps.取会话查询()) })
 }
 
 /**
@@ -551,7 +580,7 @@ async function handleRepairSessions(req: IncomingMessage, res: ServerResponse, d
  *
  * @param ctx - 插件所在的 context。
  * @param logger - 日志出口。
- * @param deps - `{ getScope, trustedHosts }`。
+ * @param deps - `{ getScope, trustedHosts, 取会话查询 }`。
  */
 export function mountApi(ctx: Ctx, logger: Logger, deps: ApiDeps): void {
     const webServer = ctx.webServer as WebServerService | undefined
@@ -583,7 +612,7 @@ export function mountApi(ctx: Ctx, logger: Logger, deps: ApiDeps): void {
 
             if (req.method === 'GET' && path === `${API_PREFIX}/retry-intercepts`) {
                 // GET 走读围栏（上面那道），不需要写端点的自定义头与 content-type。
-                handleGetRetryIntercepts(url, res)
+                await handleGetRetryIntercepts(url, res, deps)
                 return
             }
 
