@@ -58,8 +58,41 @@ export interface ConfigScope {
 export interface ApiDeps {
     /** 现问现取：设置服务的就绪时机与路由注册的先后顺序不作保证。 */
     getScope: () => ConfigScope | undefined
-    /** 用户显式信任的 authority 清单（来自 `webRuntime`）；为空时只允许回环地址。 */
+    /** 用户显式信任的 authority 清单（`readTrustedHosts` 双读 `webRuntime` / `webStartup`）；为空时只允许回环地址。 */
     trustedHosts?: string[]
+}
+
+/** 从平台服务上摘 `trustedHosts`：服务缺席或该字段不是数组时返回 undefined（当作「没有这个来源」）。 */
+function takeTrustedHosts(service: unknown): string[] | undefined {
+    const trustedHosts = (service as { trustedHosts?: unknown } | undefined)?.trustedHosts
+    if (Array.isArray(trustedHosts) === false) return undefined
+
+    return trustedHosts as string[]
+}
+
+/**
+ * 取用户显式信任的 authority 清单。
+ *
+ * **为什么双读。** 平台在不同运行时把这份清单挂在不同服务上：桌面端 0.2.0-rc.2 用
+ * `webRuntime`（bind 之后的 LAN 字面量），0.2.1-alpha.5 移除了该服务、只剩 `webStartup`。
+ * 按这个顺序取第一个拿得到的；空数组也是合法清单，不继续往下找。两个都拿不到就回空清单——
+ * 围栏随之退化成只允许回环地址，是安全默认。
+ *
+ * **为什么必须用 `ctx.get`。** 把服务名写进 `inject` 列表会让「服务不存在」变成「回调永不
+ * 执行」；属性访问未声明的服务会抛。`ctx.get` 不需要声明，缺服务时如实返回 undefined。
+ *
+ * @param ctx - 插件所在的 context（可以是 inject 回调里那个子 context）。
+ * @returns 信任清单；拿不到就是空数组。
+ */
+export function readTrustedHosts(ctx: Ctx): string[] {
+    if (typeof ctx.get !== 'function') return []
+
+    const runtimeHosts = takeTrustedHosts(ctx.get('webRuntime'))
+    if (runtimeHosts !== undefined) return runtimeHosts
+
+    const startupHosts = takeTrustedHosts(ctx.get('webStartup'))
+
+    return startupHosts ?? []
 }
 
 /** 把 authority 字符串解析成 URL，失败返回 undefined。 */

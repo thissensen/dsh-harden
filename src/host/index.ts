@@ -37,7 +37,7 @@ import {
     NUDGE_TEXT,
 } from './guard.js'
 import { buildRetryEvents, matchesRetryTokens, takeRetrySlot, type RetryBudget } from './retry.js'
-import { mountApi } from './api.js'
+import { mountApi, readTrustedHosts } from './api.js'
 import type { ConfigScope } from './api.js'
 import { mountJobBackground } from './job-background.js'
 import { mountContextCompaction } from './compaction.js'
@@ -110,7 +110,9 @@ export function apply(ctx: Ctx, config: unknown): void {
  * 就绪时机与本插件的 `apply` 先后顺序不作保证；等它们都到齐了再建作用域、再注册路由，
  * 比在 `apply` 时赌一把稳。缺服务时回调根本不会被调用——与「缺省不干预」一致。
  *
- * `webRuntime` 只为取信任主机清单（用户在本机显式信任的非回环 authority）。
+ * **`webRuntime` 绝不能进 inject 列表**：0.2.1-alpha.5 已移除该服务，注入了它的回调整条
+ * 永不执行（fiber 停在 INACTIVE）⇒ 配置通路静默挂不上。信任清单改由 `readTrustedHosts`
+ * 按运行时双读（`webRuntime` → `webStartup`），拿不到就只允许回环地址。
  *
  * @param ctx - cordis 上下文。
  * @param logger - 日志出口。
@@ -122,7 +124,7 @@ function mountConfigApi(ctx: Ctx, logger: Logger, config: unknown): void {
         return
     }
 
-    ctx.inject(['webServer', 'webRuntime', 'settings'], (webCtx: Ctx) => {
+    ctx.inject(['webServer', 'settings'], (webCtx: Ctx) => {
         const settings = webCtx.settings
         if (settings === undefined) return
 
@@ -131,8 +133,7 @@ function mountConfigApi(ctx: Ctx, logger: Logger, config: unknown): void {
             update: (patch: object) => settings.update(SETTINGS_NAMESPACE, patch),
         }
 
-        const webRuntime = (webCtx as unknown as { webRuntime?: { trustedHosts?: unknown } }).webRuntime
-        const trustedHosts = Array.isArray(webRuntime?.trustedHosts) ? (webRuntime?.trustedHosts as string[]) : []
+        const trustedHosts = readTrustedHosts(webCtx)
 
         mountApi(webCtx, logger, {
             getScope: () => scope,
