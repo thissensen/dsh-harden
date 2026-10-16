@@ -16,7 +16,7 @@
   <a href="https://github.com/thissensen/dsh-harden">GitHub</a>
 </p>
 
-> **Status**: guard rules H1, H2 and H3 are all implemented; **all 219 tests pass**, typecheck is clean, and the build succeeds.
+> **Status**: guard rules H1, H2 and H3 are all implemented; **all 226 tests pass**, typecheck is clean, and the build succeeds.
 
 ## What it solves
 
@@ -126,7 +126,7 @@ The settings page lives under the "DSH Optimize" section and has **eight** cards
 
 | Card | Description |
 |---|---|
-| **Continue after a failed tool call** | Toggle. A swallowed tool-call failure that still ends the turn as "complete" causes a note to be injected so the model retries. Also has **Failure warning prefixes**: the fixed opening of the platform warning, matched against the start of the whole reply text (lines are **not** split), case-sensitive. **Empty by default — empty means rule H1 stays off.** Example: `⚠ Could not execute tool`. |
+| **Continue after a failed tool call** | Toggle. A swallowed tool-call failure that still ends the turn as "complete" causes a note to be injected so the model retries. Also has **Failure warning prefixes**: the fixed opening of the platform warning, matched against the start of the whole reply text (lines are **not** split), case-sensitive; if a prefix starts with ``<``, a paired in-text marker (opening + closing) in the reply also counts as a failure. **Empty by default — empty means rule H1 stays off.** Example: `⚠ Could not execute tool`. |
 | **Turn ends without a reply** | Toggle. A turn whose last step has only reasoning is pulled back for one more step. |
 | **Continue after a network interruption** | Toggle plus **Network retry count** (0–99 extra attempts after the official retries run out; 0 disables it) and **Failures that trigger a retry** (failure codes `SERVER` / `RATE_LIMIT` / `TIMEOUT` / `TRANSPORT` and HTTP statuses `502` / `429`; empty retries nothing). |
 | **Automatic context compaction** | Toggle plus **Compaction scope** (a dropdown: All / Main only / Subagents only — default All), **Trigger threshold** (e.g. `200K` / `1M` / `100000`; the plugin default is `200K`) and **Summary instruction** (the instruction sent to the model when a summary is generated). Once the session exceeds the threshold, an earlier stretch of history is condensed into a summary and the platform's own "context compacted" notice is shown. |
@@ -144,7 +144,7 @@ pnpm install
 node scripts/link-deps.mjs    # link host packages into this project's node_modules
 pnpm build                     # tsc (host) + vite (client)
 pnpm typecheck                 # type check only
-pnpm test                      # vitest, 219 tests
+pnpm test                      # vitest, 226 tests
 ```
 
 ## Design

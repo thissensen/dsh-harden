@@ -11,6 +11,11 @@
  * **不拆行匹配**：AI 在正文里引用/粘贴平台警告原文（哪怕单独起一行）不应误伤，故只有整段
  * 开头就是警告才算真失败；真失败时整段 trim 后正是警告本身。
  *
+ * **兜底判据**（用户裁决 2026-10-17）：第三方 API 路由下模型先写正文、再吐**文本形式**的工具
+ * 调用标记，整段开头不是前缀 ⇒ 上面的判据判不到、回合静默结束。故**仅当前缀以 `<` 开头**时追
+ * 加一条：整段含闭合标记（`</` + 前缀去掉首字符）且存在一行 trim 后以该前缀开头，同样算失败。
+ * **已接受的代价**：正文里完整粘贴成对标记段会被判为失败；非 `<` 开头的前缀不启用此兜底。
+ *
  * **动作**：挂点与 H2 相同（`agent/turn-stopping`，serial），命中就 `agent.steer(...)`
  * 把回合掰回再走一步。判定全部收敛在本文件，是明账技术债。
  *
@@ -37,7 +42,8 @@ const MATCHED_TEXT_MAX = 120
  * 判定「回合最后一步是不是静默工具失败」。
  *
  * 线性步骤：读最后一步的消息 → 有 tool-call 块放行 → 解析前缀组（空组放行）→
- * 整段 trim 后比对 text（命中即返回说明）→ 否则放行。
+ * 整段 trim 后比对 text（命中即返回说明）→ 标记类前缀（`<` 开头）再按「闭合标记 + 开标记行」兜底
+ * 比对 → 否则放行。
  *
  * @param session - agent 的会话。
  * @param turn - 即将关闭的回合号。
@@ -63,6 +69,24 @@ export function detectSilentToolFailure(
     const wholeText = joinTextBlocks(last.message).trim()
     for (const prefix of prefixList) {
         if (wholeText.startsWith(prefix)) return matchedTextNotice(wholeText)
+
+        // 兜底：第三方 API 路由下模型先写正文、再吐文本形式的工具调用标记，整段开头因此不是前缀。
+        // 只认标记类前缀（`<` 开头）——普通警告文案在正文里被引用很常见，放开会大面积误伤。
+        // 已接受的代价：正文里完整粘贴成对标记段会被判为失败（2026-10-17 用户裁决）。
+        if (!prefix.startsWith('<')) continue
+
+        const closingMarker = `</${prefix.slice(1)}`
+        if (!wholeText.includes(closingMarker)) continue
+
+        let hasOpeningLine = false
+        for (const line of wholeText.split('\n')) {
+            if (line.trim().startsWith(prefix)) {
+                hasOpeningLine = true
+                break
+            }
+        }
+
+        if (hasOpeningLine) return matchedTextNotice(wholeText)
     }
 
     return null

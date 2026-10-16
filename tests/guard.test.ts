@@ -210,3 +210,64 @@ describe('detectEmptyTurnEnd', () => {
         expect(detectEmptyTurnEnd(session, TURN)).toBeNull()
     })
 })
+
+describe('detectSilentToolFailure 兜底：前缀以尖括号开头时按行内成对标记判定', () => {
+    /** 标记的尖括号开头——写成转义，避免在文档与工具链里被当成 HTML 标签。 */
+    const MARKER_HEAD = '\u003c'
+    /** 第三方 API 路由下的文本形式工具调用标记（全角竖线原样）——开标记即前缀本身。 */
+    const MARKER_PREFIX = `${MARKER_HEAD}｜DSML｜tool_calls`
+    const MARKER_INVOKE_LINE = `${MARKER_HEAD}｜DSML｜invoke`
+    const MARKER_CLOSE_INVOKE_LINE = `${MARKER_HEAD}/｜DSML｜invoke`
+    const MARKER_CLOSE_CALLS_LINE = `${MARKER_HEAD}/｜DSML｜tool_calls`
+
+    /** 真实样本段：开标记行 + invoke 行 + 空行 + 两条闭合标记行。 */
+    const MARKER_BLOCK = `${MARKER_PREFIX}\n${MARKER_INVOKE_LINE}\n\n${MARKER_CLOSE_INVOKE_LINE}\n${MARKER_CLOSE_CALLS_LINE}`
+
+    it('第三方路由真实样本：正文在前、标记段在后时命中', () => {
+        const body = `已完成这次分析。\n\n${MARKER_BLOCK}`
+        const result = detect([text(body)], MARKER_PREFIX)
+
+        expect(result).not.toBeNull()
+        expect(result).toContain('命中工具失败前缀')
+    })
+
+    it('已接受的代价：正文里完整粘贴成对标记段也算失败', () => {
+        const body = `这段是平台告警的原始形态：\n\n${MARKER_BLOCK}\n\n以上为引用。`
+
+        expect(detect([text(body)], MARKER_PREFIX)).not.toBeNull()
+    })
+
+    it('放行：只有开标记行、没有闭合标记', () => {
+        const body = `正文在前。\n\n${MARKER_PREFIX}\n${MARKER_INVOKE_LINE}`
+
+        expect(detect([text(body)], MARKER_PREFIX)).toBeNull()
+    })
+
+    it('放行：只有闭合标记行、没有以开标记开头的行', () => {
+        const body = `正文在前。\n\n${MARKER_CLOSE_INVOKE_LINE}\n${MARKER_CLOSE_CALLS_LINE}`
+
+        expect(detect([text(body)], MARKER_PREFIX)).toBeNull()
+    })
+
+    it('放行：前缀不以尖括号开头时兜底不触发', () => {
+        const body = `别的话开头。\n${WARNING_LINE}\n\u003c/x\u003e`
+
+        expect(detect([text(body)], '⚠ Could not execute tool')).toBeNull()
+    })
+
+    it('命中：多前缀按各自配对，半角前缀配半角标记', () => {
+        const halfWidthPrefix = `${MARKER_HEAD}|DSML|tool_calls`
+        const halfWidthBlock = `${halfWidthPrefix}\n${MARKER_HEAD}|DSML|invoke\n\n${MARKER_HEAD}/|DSML|invoke\n${MARKER_HEAD}/|DSML|tool_calls`
+        const prefixes = `${MARKER_PREFIX}\n${halfWidthPrefix}`
+        const body = `正文在前。\n\n${halfWidthBlock}`
+
+        expect(detect([text(body)], prefixes)).not.toBeNull()
+    })
+
+    it('放行：多前缀不交叉配对', () => {
+        const body = `正文在前。\n\n${MARKER_HEAD}alpha 调用\n${MARKER_HEAD}/beta>`
+        const prefixes = `${MARKER_HEAD}alpha\n${MARKER_HEAD}beta`
+
+        expect(detect([text(body)], prefixes)).toBeNull()
+    })
+})
