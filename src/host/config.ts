@@ -12,6 +12,8 @@
  */
 
 import z from '@deepseek-ai/schemastery'
+// H3 的重试次数默认值住在共享口径模块里（设置页的回落值也读它），这里不再写第二份字面量。
+import { DEFAULT_NETWORK_RETRY_COUNT } from './shared-format.js'
 import type { CompactionScope, HardenConfig } from './types.js'
 
 export type { HardenConfig } from './types.js'
@@ -35,9 +37,6 @@ export const DEFAULT_TOOL_FAILURE_PREFIXES = ''
 
 /** 默认值：与 `03-模块规格.md` 的规则 H2 一致。 */
 export const DEFAULT_EMPTY_OUTPUT_GUARD = true
-
-/** 默认值：规则 H3 官方重试耗尽后，插件兜底重试的次数。 */
-export const DEFAULT_NETWORK_RETRY_COUNT = 5
 
 /**
  * 默认值：规则 H3 触发重试的失败特征清单。

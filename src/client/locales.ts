@@ -20,6 +20,7 @@ export const zh = {
     'nudge.toolFailure': 'DSH优化：工具调用失败，已提示模型重新发起（第 {p1} 次）',
     'nudge.emptyTurn': 'DSH优化：回合没有答复就收尾，已提示模型补充正文（第 {p1} 次）',
     'progress.held': '子代理结算通知已暂存（第 {p1} 条），全部结束后统一送达',
+    'progress.rowAria': '子代理通知暂存',
     'retryIntercept.rowAria': '插件介入',
     'retryIntercept.corrected': '插件介入：平台重试链序号已修正（本回合 {p1} 处）',
 
@@ -27,6 +28,8 @@ export const zh = {
     'header.checkUpdate': '检查更新',
     'header.checking': '检查中…',
     'header.upToDate': '已是最新',
+    'header.updateAvailable': '有新版本 {p1}，点开 npm 查看',
+    'header.checkFailed': '检查失败，点击重试',
     'header.github': 'GitHub',
 
     'rule.toolFailureGuard.title': '工具调用失败续跑',
@@ -122,6 +125,7 @@ export const zh = {
     'rule.retryIntercept.help': '平台的校验只在读会话时做，写入路径上没有关卡；一旦坏数据落盘，整份会话就打不开。这一条在写入路径上补一道关卡，常驻开启、没有开关。修正发生时，会话回合尾部会显示一行浅色提示。',
 
     'panel.settingsNotReady': '设置服务未就绪',
+    'panel.latestVersionMissing': '检查更新返回的数据里没有版本号',
 
     'repair.title': '修复损坏会话',
     'repair.desc': '扫描全部会话文件，修复已知的损坏形态，让打不开的会话重新可用',
@@ -150,6 +154,7 @@ export const en: Record<CopyKey, string> = {
     'nudge.toolFailure': 'DSH Optimize: a tool call failed; the model was asked to retry (attempt {p1})',
     'nudge.emptyTurn': 'DSH Optimize: the turn ended without a reply; the model was asked to add one (attempt {p1})',
     'progress.held': 'Subagent completion notices are held back ({p1} so far) and delivered together once every subagent has finished',
+    'progress.rowAria': 'Subagent notices held',
     'retryIntercept.rowAria': 'Plugin intervention',
     'retryIntercept.corrected': 'Plugin intervention: retry-chain sequence corrected ({p1} in this turn)',
 
@@ -157,6 +162,8 @@ export const en: Record<CopyKey, string> = {
     'header.checkUpdate': 'Check for updates',
     'header.checking': 'Checking…',
     'header.upToDate': 'Up to date',
+    'header.updateAvailable': 'New version {p1} — open on npm',
+    'header.checkFailed': 'Update check failed; click to retry',
     'header.github': 'GitHub',
 
     'rule.toolFailureGuard.title': 'Continue after a failed tool call',
@@ -253,6 +260,7 @@ export const en: Record<CopyKey, string> = {
     'rule.retryIntercept.help': 'The platform validates retry chains only when reading a session; the write path has no gate. This rule adds one on the write path and is always on. A light note appears at the turn tail whenever a correction happens.',
 
     'panel.settingsNotReady': 'Settings service is not ready',
+    'panel.latestVersionMissing': 'The update check returned no version',
 
     'repair.title': 'Repair broken sessions',
     'repair.desc': 'Scans every session file and repairs known kinds of damage so unreadable sessions work again',

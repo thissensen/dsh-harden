@@ -36,7 +36,9 @@ import {
     detectSilentToolFailure,
     EMPTY_TURN_NUDGE_TEXT,
     NUDGE_TEXT,
+    parseToolFailurePrefixes,
 } from './guard.js'
+import { readTurnSnapshot, type TurnSnapshot } from './step-reader.js'
 import { buildRetryEvents, matchesRetryTokens, takeRetrySlot, type RetryBudget } from './retry.js'
 import { mountApi, readSessionQuery, readTrustedHosts } from './api.js'
 import type { ConfigScope } from './api.js'
@@ -154,6 +156,10 @@ function mountConfigApi(ctx: Ctx, logger: Logger, config: unknown): void {
  * 有没有命中失败前缀」，H2 看「最后一步有没有正文」——不可能同时命中，所以不需要互斥标记
  * 或短路逻辑。合成一个监听器让收尾边界的异常边界只有一处。
  *
+ * **为什么会话一回合只读一次。** 两条规则看的是同一份「最后一步」快照；旧实现各读一遍会话、
+ * 各拼一遍正文，而默认配置下 H1 前缀为空、那次扫描纯属浪费。现在先算开关、再读一次快照，
+ * 两条规则共用。
+ *
  * **为什么用 steer 而不是返回值。** 这个事件是 serial 模式，监听器没有 `next`；平台文档
  * 写明了反对收尾的唯一手段就是在监听器里调 `agent.steer(...)`——平台收尾前会重读收件箱，
  * 有新的引导就再走一步，没有才真正关闭回合。
@@ -176,8 +182,21 @@ function mountTurnStoppingGuard(
 
     ctx.on('agent/turn-stopping', async (payloadRaw: unknown): Promise<void> => {
         try {
-            await considerToolFailureSteer(payloadRaw, state, current, logger)
-            await considerEmptyTurnSteer(payloadRaw, state, current, logger)
+            const payload = payloadRaw as TurnStoppingPayload | null
+            if (payload === null || typeof payload !== 'object') return
+
+            const config = current()
+            const 前缀组 = parseToolFailurePrefixes(config.toolFailurePrefixes)
+            const 是否判工具失败 = config.toolFailureGuard === true && 前缀组.length > 0
+            const 是否判空回合 = config.emptyOutputGuard === true
+            // 两条都不判时连快照都不读：默认配置下 H1 前缀为空，这一步本来会白扫一次会话。
+            if (是否判工具失败 === false && 是否判空回合 === false) return
+
+            const 快照 = readTurnSnapshot(payload.agent.session, payload.turn ?? 0)
+            if (快照 === null) return
+
+            if (是否判工具失败) considerToolFailureSteer(payload, 快照, 前缀组, state, logger)
+            if (是否判空回合) considerEmptyTurnSteer(payload, 快照, state, logger)
 
         } catch (error) {
             // 看护层自己的异常绝不能挡住回合收尾——出错就什么都不做。
@@ -189,26 +208,22 @@ function mountTurnStoppingGuard(
 /**
  * 判定 + steer（规则 H1）。命中就往收件箱投一条纠正消息，把回合拽回再走一步。
  *
- * @param payloadRaw - `agent/turn-stopping` 的载荷（形状由平台保证，这里按需收窄）。
+ * @param payload - `agent/turn-stopping` 的载荷（监听器已收窄）。
+ * @param 快照 - 本回合最后一步的快照（监听器已判空）。
+ * @param 前缀组 - 用户配置的前缀组（监听器已判非空）。
  * @param state - 活状态（注入计数）。
- * @param current - 配置读取器。
  * @param logger - 日志出口。
  */
-async function considerToolFailureSteer(
-    payloadRaw: unknown,
+function considerToolFailureSteer(
+    payload: TurnStoppingPayload,
+    快照: TurnSnapshot,
+    前缀组: readonly string[],
     state: HardenState,
-    current: () => Required<HardenConfig>,
     logger: Logger,
-): Promise<void> {
-    const payload = payloadRaw as TurnStoppingPayload | null
-    if (payload === null || typeof payload !== 'object') return
-
-    const config = current()
-    if (config.toolFailureGuard !== true) return
-
+): void {
     const agent = payload.agent as unknown as object
     const turn = payload.turn ?? 0
-    const hit = detectSilentToolFailure(payload.agent.session, turn, config.toolFailurePrefixes)
+    const hit = detectSilentToolFailure(快照, 前缀组)
     if (hit === null) return
 
     const steer = payload.agent.steer
@@ -227,26 +242,22 @@ async function considerToolFailureSteer(
 }
 
 /**
- * 判定 + steer。命中就往收件箱投一条纠正消息，把回合拽回再走一步。
+ * 判定 + steer（规则 H2）。命中就往收件箱投一条纠正消息，把回合拽回再走一步。
  *
- * @param payloadRaw - `agent/turn-stopping` 的载荷（形状由平台保证，这里按需收窄）。
+ * @param payload - `agent/turn-stopping` 的载荷（监听器已收窄）。
+ * @param 快照 - 本回合最后一步的快照（监听器已判空）。
  * @param state - 活状态（注入计数）。
- * @param current - 配置读取器。
  * @param logger - 日志出口。
  */
-async function considerEmptyTurnSteer(
-    payloadRaw: unknown,
+function considerEmptyTurnSteer(
+    payload: TurnStoppingPayload,
+    快照: TurnSnapshot,
     state: HardenState,
-    current: () => Required<HardenConfig>,
     logger: Logger,
-): Promise<void> {
-    const payload = payloadRaw as TurnStoppingPayload | null
-    if (payload === null || typeof payload !== 'object') return
-    if (current().emptyOutputGuard !== true) return
-
+): void {
     const agent = payload.agent as unknown as object
     const turn = payload.turn ?? 0
-    const hit = detectEmptyTurnEnd(payload.agent.session, turn)
+    const hit = detectEmptyTurnEnd(快照)
     if (hit === null) return
 
     const steer = payload.agent.steer

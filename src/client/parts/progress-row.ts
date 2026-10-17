@@ -70,7 +70,7 @@ export function ProgressRow(props: ProgressRowProps): ReactElement {
 
     return createElement(
         'div',
-        { style: ROW, role: 'note' },
+        { style: ROW, role: 'note', 'aria-label': t('progress.rowAria') },
         createElement('span', { style: GLYPH }, createElement(IconShieldOutlineRegular, { size: 13 })),
         createElement('span', { style: TEXT }, t('progress.held', { p1: props.node.data.count })),
     )

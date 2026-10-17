@@ -22,6 +22,7 @@ import { randomUUID } from 'node:crypto'
 import { CompactionId, compactCheckpointSource, toolPairingBalancedBefore } from '@deepseek-ai/dsh-compaction'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
 
+import { parseTokenCount } from './shared-format.js'
 import type {
     AgentLike,
     Ctx,
@@ -91,29 +92,6 @@ interface TransactionDeps {
     readonly tokenMeter: TokenMeterService
     readonly llm: LlmService
     readonly logger: Logger
-}
-
-/**
- * 解析 `1M` / `200K` / `100000` 这类阈值文本；解析失败返回 null。
- *
- * `K` = 1000、`M` = 1000000，不区分大小写，允许首尾空白，必须是正整数。
- *
- * @param text - 用户配置的阈值文本。
- * @returns 解析出的 token 数；格式不对或不是正数时返回 null。
- */
-export function parseTokenCount(text: string): number | null {
-    const trimmed = text.trim()
-    const matched = /^(\d+)([KkMm]?)$/.exec(trimmed)
-    if (matched === null) return null
-
-    const base = Number.parseInt(matched[1], 10)
-    if (base <= 0) return null
-
-    const unit = matched[2].toUpperCase()
-    if (unit === 'K') return base * 1000
-    if (unit === 'M') return base * 1000000
-
-    return base
 }
 
 /**

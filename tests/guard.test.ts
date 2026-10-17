@@ -2,9 +2,10 @@
  * 规则 H1（工具调用失败被吞）与 H2（回合无正文收尾）判定逻辑的持久化测试。
  *
  * 被测对象是 `src/host/guard.ts` 导出的 `detectSilentToolFailure()`（H1）与
- * `detectEmptyTurnEnd()`（H2）：命中返回说明文本，未命中返回 null。
+ * `detectEmptyTurnEnd()`（H2）：入参是 `step-reader.ts` 的回合快照（一回合一读），
+ * 命中返回说明文本，未命中返回 null。快照读取与前缀切分各自有用例，接线与旧断言一一对应。
  *
- * H1 的判据是「读最后一步正文，整段 trim 后匹配用户配置的前缀开头」（旧版依赖平台警告文案、
+ * H1 的判据是「整段正文 trim 后匹配用户配置的前缀开头」（旧版依赖平台警告文案、
  * reasoning 调用意图与逐行匹配的判据已废弃，对应用例一并删除）。
  *
  * @module dsh-harden/tests/guard
@@ -12,7 +13,12 @@
 
 import { describe, expect, it } from 'vitest'
 import type { MessageBlock, SessionEventLike, SessionLike } from '../src/host/types.js'
-import { detectEmptyTurnEnd, detectSilentToolFailure } from '../src/host/guard.js'
+import {
+    detectEmptyTurnEnd,
+    detectSilentToolFailure,
+    parseToolFailurePrefixes,
+} from '../src/host/guard.js'
+import { readTurnSnapshot } from '../src/host/step-reader.js'
 
 /** 固定的回合号与最后一步步号——每条用例都在同一坐标上判定。 */
 const TURN = 3
@@ -44,7 +50,7 @@ const WARNING_LINE = '⚠ Could not execute tool(s): "run_code": required field 
 /** 用「本回合最后一步只有这一条 assistant/message」的会话跑一次 H1 判定。 */
 function detect(content: readonly MessageBlock[], prefixes: string): string | null {
     const session = makeSession([assistantEvent(LAST_STEP, content)])
-    return detectSilentToolFailure(session, TURN, prefixes)
+    return detectSilentToolFailure(readTurnSnapshot(session, TURN), parseToolFailurePrefixes(prefixes))
 }
 
 describe('detectSilentToolFailure', () => {
@@ -120,8 +126,9 @@ describe('detectSilentToolFailure', () => {
                 { type: 'turn/start', data: { turn: TURN } },
                 assistantEvent(LAST_STEP + 1, [text(WARNING_LINE)]),
             ])
+            const snapshot = readTurnSnapshot(session, TURN + 1)
 
-            expect(detectSilentToolFailure(session, TURN + 1, '⚠ Could not execute tool')).toBeNull()
+            expect(detectSilentToolFailure(snapshot, parseToolFailurePrefixes('⚠ Could not execute tool'))).toBeNull()
         })
 
         it('session.snapshotEvents() 抛异常时不向外抛，按未命中处理', () => {
@@ -130,8 +137,9 @@ describe('detectSilentToolFailure', () => {
                     throw new Error('会话日志读取失败')
                 },
             }
+            const snapshot = readTurnSnapshot(session, TURN)
 
-            expect(detectSilentToolFailure(session, TURN, '⚠ Could not execute tool')).toBeNull()
+            expect(detectSilentToolFailure(snapshot, parseToolFailurePrefixes('⚠ Could not execute tool'))).toBeNull()
         })
     })
 })
@@ -139,7 +147,7 @@ describe('detectSilentToolFailure', () => {
 describe('detectEmptyTurnEnd', () => {
     /** 用「本回合只有这些 assistant/message 事件」的会话跑一次 H2 判定。 */
     function detectTurn(events: readonly SessionEventLike[], turn: number): string | null {
-        return detectEmptyTurnEnd(makeSession(events), turn)
+        return detectEmptyTurnEnd(readTurnSnapshot(makeSession(events), turn))
     }
 
     it('命中：最后一步只有 reasoning，没有正文也没有工具调用', () => {
@@ -207,7 +215,7 @@ describe('detectEmptyTurnEnd', () => {
             },
         }
 
-        expect(detectEmptyTurnEnd(session, TURN)).toBeNull()
+        expect(detectEmptyTurnEnd(readTurnSnapshot(session, TURN))).toBeNull()
     })
 })
 
@@ -269,5 +277,112 @@ describe('detectSilentToolFailure 兜底：前缀以尖括号开头时按行内�
         const prefixes = `${MARKER_HEAD}alpha\n${MARKER_HEAD}beta`
 
         expect(detect([text(body)], prefixes)).toBeNull()
+    })
+})
+
+describe('readTurnSnapshot', () => {
+    it('取该回合里步号最大的那条消息', () => {
+        const session = makeSession([
+            assistantEvent(LAST_STEP, [text('早一步')]),
+            assistantEvent(LAST_STEP + 2, [text('最后一步')]),
+            assistantEvent(LAST_STEP + 1, [text('中间一步')]),
+        ])
+        const snapshot = readTurnSnapshot(session, TURN)
+
+        expect(snapshot?.step).toBe(LAST_STEP + 2)
+        expect(snapshot?.wholeText).toBe('最后一步')
+    })
+
+    it('同一步出现多条消息时后者胜', () => {
+        const session = makeSession([
+            assistantEvent(LAST_STEP, [reasoning('先想'), text('旧正文')]),
+            assistantEvent(LAST_STEP, [text('新正文')]),
+        ])
+        const snapshot = readTurnSnapshot(session, TURN)
+
+        expect(snapshot?.wholeText).toBe('新正文')
+    })
+
+    it('正文与思考各自按换行拼接后再 trim（不是先 trim 再拼）', () => {
+        const session = makeSession([
+            assistantEvent(LAST_STEP, [
+                text('  第一段  '),
+                text('第二段'),
+                reasoning('  想来想去  '),
+                reasoning('再想一层'),
+            ]),
+        ])
+        const snapshot = readTurnSnapshot(session, TURN)
+
+        expect(snapshot?.wholeText).toBe('第一段  \n第二段')
+        expect(snapshot?.wholeReasoning).toBe('想来想去  \n再想一层')
+    })
+
+    it('有 tool-call 块时 hasToolCall 为 true', () => {
+        const session = makeSession([
+            assistantEvent(LAST_STEP, [
+                text('先说明'),
+                { type: 'tool-call', id: 'call_1', name: 'run_code' },
+            ]),
+        ])
+        const snapshot = readTurnSnapshot(session, TURN)
+
+        expect(snapshot?.hasToolCall).toBe(true)
+    })
+
+    it('该回合没有 assistant/message 时返回 null', () => {
+        const session = makeSession([
+            { type: 'turn/start', data: { turn: TURN } },
+            assistantEvent(LAST_STEP, [text('这是本回合的消息')]),
+        ])
+
+        expect(readTurnSnapshot(session, TURN + 1)).toBeNull()
+    })
+
+    it('session.snapshotEvents() 抛异常时返回 null', () => {
+        const session: SessionLike = {
+            snapshotEvents: () => {
+                throw new Error('会话日志读取失败')
+            },
+        }
+
+        expect(readTurnSnapshot(session, TURN)).toBeNull()
+    })
+})
+
+describe('parseToolFailurePrefixes', () => {
+    it('空串切成空数组', () => {
+        expect(parseToolFailurePrefixes('')).toEqual([])
+    })
+
+    it('只有空行与空白时切成空数组', () => {
+        expect(parseToolFailurePrefixes('\n  \n\t\n')).toEqual([])
+    })
+
+    it('多行里只留非空条目并逐条 trim', () => {
+        expect(parseToolFailurePrefixes('  第一前缀  \n\n\t第二前缀\n   \n')).toEqual(['第一前缀', '第二前缀'])
+    })
+})
+
+describe('命中说明的截断（回显上限 120 字）', () => {
+    /** 命中说明的固定开头——长度参与截断断言。 */
+    const NOTICE_HEAD = '命中工具失败前缀：'
+    const PREFIX = '⚠ Could not execute tool'
+    const MAX = 120
+
+    it('整段恰 120 字时完整回显、不以省略号结尾', () => {
+        const body = `${PREFIX}${'x'.repeat(MAX - PREFIX.length)}`
+        const result = detect([text(body)], PREFIX)
+
+        expect(body.length).toBe(MAX)
+        expect(result).toBe(`${NOTICE_HEAD}${body}`)
+    })
+
+    it('整段超过 120 字时截到 120 字再加省略号', () => {
+        const body = `${PREFIX}${'x'.repeat(200)}`
+        const result = detect([text(body)], PREFIX)
+
+        expect(result).toBe(`${NOTICE_HEAD}${body.slice(0, MAX)}…`)
+        expect(result?.length).toBe(NOTICE_HEAD.length + MAX + 1)
     })
 })

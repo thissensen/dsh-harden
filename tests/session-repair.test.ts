@@ -4,7 +4,7 @@
  * 被测对象是 `src/host/session-repair.ts`：
  * - 纯函数 `normalizeRetryChain()`（重试链规范化：同链 retry 序号重排成 1..n + 同链共用
  *   一个 retryId + `normal` 模式的 maxRetries 抬到不小于本条序号）与
- *   `expandSourceEventSeqs()`（序号范围编码展开）——直接验证改动结果；
+ *   `expandSourceEventSeqs()`（序号范围编码展开）——直接验证改动结果与「跨度过大就放弃」的结论；
  * - 完整流程 `repairSessionFile()`——注入模拟平台校验器，用真实 zstd 文件验证
  *   「无需修复 / 已修复 / 修不了 / 读取失败」四态与落盘行为。
  *
@@ -13,13 +13,36 @@
  * @module dsh-harden/tests/session-repair
  */
 
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { constants, zstdCompressSync, zstdDecompressSync } from 'node:zlib'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { expandSourceEventSeqs, loadPlatformValidator, normalizeRetryChain, repairSessionFile, scanSessionFiles } from '../src/host/session-repair.js'
 import type { SessionValidator } from '../src/host/session-repair.js'
+
+/**
+ * 写回桩：只把 `rename` 换成可控版本，其余 fs 能力（readFile/writeFile/rm/readdir）一律走真实现。
+ *
+ * `vi.mock` 是文件级的——本文件所有用例都会拿到这个模块，故 `rename` 默认转调真实现，
+ * 只有「写回失败」用例临时把 `重命名抛错` 打开。
+ */
+const 写回桩 = vi.hoisted(() => ({ 重命名抛错: false, 临时路径组: [] as string[] }))
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+    const 原模块 = await importOriginal<typeof import('node:fs/promises')>()
+    const 假重命名: typeof 原模块.rename = async (源路径, 目标路径) => {
+        if (写回桩.重命名抛错 === false) {
+            await 原模块.rename(源路径, 目标路径)
+            return
+        }
+
+        写回桩.临时路径组.push(String(源路径))
+        throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' })
+    }
+
+    return { ...原模块, rename: 假重命名 }
+})
 
 /** 与模块内一致的带 checksum 压缩选项（测试造文件用）。 */
 const CHECKSUM_OPTIONS = { params: { [constants.ZSTD_c_checksumFlag]: 1 } }
@@ -239,7 +262,7 @@ describe('expandSourceEventSeqs（序号范围编码展开）', () => {
     it('把 [8,10] 展开成 [8,9,10]', () => {
         const 事件组 = [序号事件([[8, 10]])]
 
-        expect(expandSourceEventSeqs(事件组)).toBe(true)
+        expect(expandSourceEventSeqs(事件组).有改动).toBe(true)
         expect((事件组[0] as { data: { sourceEventSeqs: unknown[] } }).data.sourceEventSeqs).toEqual([8, 9, 10])
     })
 
@@ -253,15 +276,38 @@ describe('expandSourceEventSeqs（序号范围编码展开）', () => {
     it('无范围编码时不改动', () => {
         const 事件组 = [序号事件([1, 2, 3])]
 
-        expect(expandSourceEventSeqs(事件组)).toBe(false)
+        expect(expandSourceEventSeqs(事件组).有改动).toBe(false)
     })
 
     it('遍历多个事件', () => {
         const 事件组 = [序号事件([1, [2, 4]]), 序号事件([10, [12, 13]])]
 
-        expect(expandSourceEventSeqs(事件组)).toBe(true)
+        expect(expandSourceEventSeqs(事件组).有改动).toBe(true)
         expect((事件组[0] as { data: { sourceEventSeqs: unknown[] } }).data.sourceEventSeqs).toEqual([1, 2, 3, 4])
         expect((事件组[1] as { data: { sourceEventSeqs: unknown[] } }).data.sourceEventSeqs).toEqual([10, 12, 13])
+    })
+
+    it('跨度 100001 超过展开上界：拒绝展开、事件原样、带放弃原因', () => {
+        const 事件组 = [序号事件([[0, 100000]])]
+
+        const 结果 = expandSourceEventSeqs(事件组)
+
+        expect(结果.有改动).toBe(false)
+        expect(结果.放弃原因).not.toBeNull()
+        expect((事件组[0] as { data: { sourceEventSeqs: unknown[] } }).data.sourceEventSeqs).toEqual([[0, 100000]])
+    })
+
+    it('跨度正好 100000 等于展开上界：允许展开', () => {
+        const 事件组 = [序号事件([[0, 99999]])]
+
+        const 结果 = expandSourceEventSeqs(事件组)
+
+        expect(结果.有改动).toBe(true)
+        expect(结果.放弃原因).toBeNull()
+        const 序号组 = (事件组[0] as { data: { sourceEventSeqs: number[] } }).data.sourceEventSeqs
+        expect(序号组.length).toBe(100000)
+        expect(序号组[0]).toBe(0)
+        expect(序号组[99999]).toBe(99999)
     })
 })
 
@@ -332,6 +378,128 @@ describe('repairSessionFile（完整流程与状态表达）', () => {
 
         expect(结果.status).toBe('read-failed')
         expect(结果.changedCategories).toEqual([])
+    })
+
+    it('解析失败：0 字节文件只报本文件 read-failed、不抛', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            await writeFile(文件, Buffer.alloc(0))
+
+            const 结果 = await repairSessionFile(文件, 用假校验器())
+
+            expect(结果.status).toBe('read-failed')
+            expect(结果.reason).toContain('解析失败')
+            expect(结果.changedCategories).toEqual([])
+        } finally {
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
+    it('解析失败：首行是 null 只报本文件 read-failed、不抛', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            await writeFile(文件, 编码会话文件([null, 序号事件([1, 2])]))
+
+            const 结果 = await repairSessionFile(文件, 用假校验器())
+
+            expect(结果.status).toBe('read-failed')
+            expect(结果.reason).toContain('解析失败')
+            expect(结果.changedCategories).toEqual([])
+        } finally {
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
+    it('解析失败：首行是数组只报本文件 read-failed、不抛', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            await writeFile(文件, 编码会话文件([[], 序号事件([1, 2])]))
+
+            const 结果 = await repairSessionFile(文件, 用假校验器())
+
+            expect(结果.status).toBe('read-failed')
+            expect(结果.reason).toContain('解析失败')
+            expect(结果.changedCategories).toEqual([])
+        } finally {
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
+    it('写回失败：清掉临时文件、目录只剩原文件、两次临时名不同', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            const 原字节 = 编码会话文件([{ type: 'session', id: 's1' }, 序号事件([[8, 10]])])
+            await writeFile(文件, 原字节)
+
+            写回桩.临时路径组.length = 0
+            写回桩.重命名抛错 = true
+
+            const 首结果 = await repairSessionFile(文件, 用假校验器())
+            const 二次结果 = await repairSessionFile(文件, 用假校验器())
+
+            expect(首结果.status).toBe('unrepairable')
+            expect(首结果.reason).toContain('写回失败')
+            expect(二次结果.status).toBe('unrepairable')
+            expect(二次结果.reason).toContain('写回失败')
+
+            // 真 readdir：rename 失败后临时文件必须被清掉，目录里只剩原会话文件。
+            expect((await readdir(目录)).sort()).toEqual(['session.v4.jsonl.zstd'])
+            expect(写回桩.临时路径组.length).toBe(2)
+            expect(写回桩.临时路径组[0]).not.toBe(写回桩.临时路径组[1])
+            expect((await readFile(文件)).equals(原字节)).toBe(true)
+        } finally {
+            写回桩.重命名抛错 = false
+            写回桩.临时路径组.length = 0
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
+    it('超大序号范围：unrepairable、reason 以「修不了：」开头且含跨度过大、磁盘字节没变', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            const 原字节 = 编码会话文件([{ type: 'session', id: 's1' }, 序号事件([[0, 200000000]])])
+            await writeFile(文件, 原字节)
+
+            const 结果 = await repairSessionFile(文件, 用假校验器())
+
+            expect(结果.status).toBe('unrepairable')
+            expect(结果.reason.startsWith('修不了：')).toBe(true)
+            expect(结果.reason).toContain('跨度过大')
+            expect(结果.changedCategories).toEqual([])
+            expect((await readFile(文件)).equals(原字节)).toBe(true)
+        } finally {
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
+    it('既有坏重试链又有超大范围：仍不落盘、reason 只讲跨度', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            const 原字节 = 编码会话文件([
+                { type: 'session', id: 's1' },
+                重试事件(1, 1, 'p', 'k', 'id-1', 1),
+                重试事件(1, 1, 'p', 'k', 'id-2', 2),
+                序号事件([[0, 200000000]]),
+            ])
+            await writeFile(文件, 原字节)
+
+            const 结果 = await repairSessionFile(文件, 用假校验器())
+
+            expect(结果.status).toBe('unrepairable')
+            expect(结果.reason).toContain('跨度过大')
+            expect(结果.reason).not.toContain('不属于已知的可修类别')
+            expect(结果.reason).not.toContain('修复后仍未通过校验')
+            expect(结果.changedCategories).toEqual([])
+            expect((await readFile(文件)).equals(原字节)).toBe(true)
+        } finally {
+            await rm(目录, { recursive: true, force: true })
+        }
     })
 
     it('修好的文件重读后校验通过', async () => {

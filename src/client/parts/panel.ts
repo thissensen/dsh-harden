@@ -29,6 +29,13 @@ import {
     Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+    DEFAULT_NETWORK_RETRY_COUNT,
+    RETRY_COUNT_MAX,
+    RETRY_COUNT_MIN,
+    parseTokenCount,
+    是否有更新版本,
+} from '../../host/shared-format'
 import { translateHostText, translateZh } from '../locales'
 import type { PlatformTranslate } from '../locales'
 
@@ -69,10 +76,6 @@ interface HardenSettings {
     compactionInstruction: string
 }
 
-/** 兜底重试次数的合法区间（与 host 侧 api.ts 的校验保持一致）。 */
-const RETRY_COUNT_MIN = 0
-const RETRY_COUNT_MAX = 99
-
 /** 面板加载状态机。 */
 type LoadState =
     | { status: 'loading' }
@@ -85,14 +88,25 @@ interface Notice {
     text: string
 }
 
-/** 「检查更新」的本地三态占位（接口未定，不真发网络请求）。 */
-type UpdatePhase = 'idle' | 'checking' | 'latest'
+/** 「检查更新」的状态机：只有 outdated 带版本号。 */
+type UpdateState =
+    | { phase: 'idle' }
+    | { phase: 'checking' }
+    | { phase: 'latest' }
+    | { phase: 'failed' }
+    | { phase: 'outdated'; version: string }
 
 /** 配置端点（读与写共用）。 */
 const CONFIG_ENDPOINT = '/api/dsh-harden/config'
 
 /** 会话修复端点：扫描并修复全部会话文件。 */
 const REPAIR_ENDPOINT = '/api/dsh-harden/repair-sessions'
+
+/** 版本检查端点（host 中转去 npm 查，见 host 侧 api.ts）。 */
+const VERSION_ENDPOINT = '/api/dsh-harden/latest-version'
+
+/** 有新版时按钮跳这里。 */
+const NPM_PACKAGE_URL = 'https://www.npmjs.com/package/dsh-harden'
 
 /** 写围栏要求的自定义头：它让请求变成非简单请求，跨站页面伪造不出来。 */
 const MUTATION_HEADER = { 'x-dsh-harden': '1' }
@@ -152,7 +166,9 @@ async function loadSettings(): Promise<HardenSettings> {
         toolFailureGuard: typeof fields.toolFailureGuard === 'boolean' ? fields.toolFailureGuard : true,
         toolFailurePrefixes: typeof fields.toolFailurePrefixes === 'string' ? fields.toolFailurePrefixes : '',
         emptyOutputGuard: typeof fields.emptyOutputGuard === 'boolean' ? fields.emptyOutputGuard : true,
-        networkRetryCount: typeof fields.networkRetryCount === 'number' ? fields.networkRetryCount : 3,
+        networkRetryCount: typeof fields.networkRetryCount === 'number'
+            ? fields.networkRetryCount
+            : DEFAULT_NETWORK_RETRY_COUNT,
         networkRetryTokens: typeof fields.networkRetryTokens === 'string' ? fields.networkRetryTokens : '',
         backgroundJobTool: typeof fields.backgroundJobTool === 'boolean' ? fields.backgroundJobTool : true,
         subagentAggregation: typeof fields.subagentAggregation === 'boolean' ? fields.subagentAggregation : false,
@@ -175,30 +191,6 @@ function messageOf(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
 }
 
-/**
- * 把阈值文本解析成正整数：`K` 等于 1000、`M` 等于 1000000，不区分大小写，允许首尾空白。
- *
- * 口径与 host 侧一致，两边各留一份实现——client 半边够不到 host 模块。
- *
- * @param text - 用户填的阈值文本。
- * @returns 解析出的正整数；格式不对或不是正数时返回 null。
- */
-function parseThresholdText(text: string): number | null {
-    const trimmed = text.trim()
-    const matched = /^(\d+)([KkMm]?)$/.exec(trimmed)
-    if (matched === null) return null
-
-    const base = Number.parseInt(matched[1], 10)
-    if (base <= 0) return null
-
-    const unit = matched[2].toUpperCase()
-    if (unit === 'K') return base * 1000
-    if (unit === 'M') return base * 1000000
-
-    return base
-}
-
-
 // ── 面板 ────────────────────────────────────────────────────────────────
 
 /**
@@ -212,7 +204,7 @@ export function HardenPanel(props: PanelProps): ReactElement {
     const [attempt, setAttempt] = useState(0)
     const [busy, setBusy] = useState(false)
     const [notice, setNotice] = useState<Notice | null>(null)
-    const [updatePhase, setUpdatePhase] = useState<UpdatePhase>('idle')
+    const [updateState, setUpdateState] = useState<UpdateState>({ phase: 'idle' })
 
     useEffect(() => {
         let alive = true
@@ -237,13 +229,37 @@ export function HardenPanel(props: PanelProps): ReactElement {
         }
     }, [attempt])
 
-    // 「检查更新」的占位：接口未定，只在本机走一遍三态，不真发请求。
-    useEffect(() => {
-        if (updatePhase !== 'checking') return
+    /** 点「检查更新」：已有新版就跳 npm，否则真发一次请求。 */
+    async function 检查更新Btn_Click(): Promise<void> {
+        if (updateState.phase === 'outdated') {
+            window.open(NPM_PACKAGE_URL, '_blank', 'noopener,noreferrer')
+            return
+        }
 
-        const timer = window.setTimeout(() => setUpdatePhase('latest'), 600)
-        return () => window.clearTimeout(timer)
-    }, [updatePhase])
+        if (updateState.phase === 'checking') return
+
+        setUpdateState({ phase: 'checking' })
+
+        try {
+            const data = await fetchJson(VERSION_ENDPOINT)
+            const 最新版本 = data.最新版本
+
+            // 字段缺失或不是非空字符串时按失败处理：拿不到版本号就下不了「有没有新版」的结论。
+            if (typeof 最新版本 !== 'string' || 最新版本.length === 0) {
+                throw Error('panel.latestVersionMissing')
+            }
+
+            setUpdateState(
+                是否有更新版本(PLUGIN_VERSION, 最新版本)
+                    ? { phase: 'outdated', version: 最新版本 }
+                    : { phase: 'latest' },
+            )
+
+        } catch {
+            // 失败只说「检查失败」：离线、代理、registry 读副本延迟对用户是同一件事。
+            setUpdateState({ phase: 'failed' })
+        }
+    }
 
     /**
      * 把一份配置补丁写回 host：先上屏，再写回；写失败就退回原值并把原因摆出来。
@@ -288,11 +304,11 @@ export function HardenPanel(props: PanelProps): ReactElement {
     return createElement(
         'div',
         { style: PAGE },
-        renderHeader(t, updatePhase, () => setUpdatePhase('checking')),
-        renderBody(state, t, busy, applyPatch, retry),
+        renderHeader(t, updateState, 检查更新Btn_Click),
         notice === null
             ? null
             : createElement('div', { style: notice.kind === 'ok' ? NOTICE_OK : NOTICE_ERROR }, notice.text),
+        renderBody(state, t, busy, applyPatch, retry),
     )
 }
 
@@ -300,10 +316,10 @@ export function HardenPanel(props: PanelProps): ReactElement {
  * 页头：左起图标 + 中文名 + 包名 + 版本号，最右是「检查更新」与 GitHub。
  *
  * @param t - 翻译函数。
- * @param phase - 「检查更新」的当前状态。
+ * @param updateState - 「检查更新」的当前状态。
  * @param onCheck - 点击「检查更新」。
  */
-function renderHeader(t: PlatformTranslate, phase: UpdatePhase, onCheck: () => void): ReactElement {
+function renderHeader(t: PlatformTranslate, updateState: UpdateState, onCheck: () => void): ReactElement {
     return createElement(
         'div',
         { style: HEADER },
@@ -318,10 +334,10 @@ function renderHeader(t: PlatformTranslate, phase: UpdatePhase, onCheck: () => v
                 variant: 'ghost',
                 size: 'sm',
                 icon: createElement(IconRefreshOutlineRegular, { size: 14 }),
-                disabled: phase === 'checking',
+                disabled: updateState.phase === 'checking',
                 onClick: onCheck,
             },
-            checkLabel(t, phase),
+            checkLabel(t, updateState),
         ),
         createElement(
             Button,
@@ -339,14 +355,16 @@ function openGithub(): void {
 /**
  * 「检查更新」按钮的文案。
  *
- * 三态里走不到「有更新」——接口未定，这里只做本地占位。
+ * 按钮的全部行为面只有两处：本函数定文案，`检查更新Btn_Click` 定点击；`renderHeader` 只接线。
  *
  * @param t - 翻译函数。
- * @param phase - 当前状态。
+ * @param updateState - 当前状态。
  */
-function checkLabel(t: PlatformTranslate, phase: UpdatePhase): string {
-    if (phase === 'checking') return t('header.checking')
-    if (phase === 'latest') return t('header.upToDate')
+function checkLabel(t: PlatformTranslate, updateState: UpdateState): string {
+    if (updateState.phase === 'checking') return t('header.checking')
+    if (updateState.phase === 'latest') return t('header.upToDate')
+    if (updateState.phase === 'failed') return t('header.checkFailed')
+    if (updateState.phase === 'outdated') return t('header.updateAvailable', { p1: updateState.version })
 
     return t('header.checkUpdate')
 }
@@ -853,7 +871,7 @@ function CompactionCard(props: CompactionCardProps): ReactElement {
     const thresholdText = thresholdDraft ?? props.settings.compactionThreshold
     const instructionText = instructionDraft ?? props.settings.compactionInstruction
 
-    const thresholdInvalid = parseThresholdText(thresholdText) === null
+    const thresholdInvalid = parseTokenCount(thresholdText) === null
 
     /** 提交触发阈值：非法就丢弃，等于原值就不发请求。 */
     async function commitThreshold(): Promise<void> {
@@ -861,7 +879,7 @@ function CompactionCard(props: CompactionCardProps): ReactElement {
 
         setThresholdDraft(null)
 
-        if (parseThresholdText(thresholdDraft) === null) return
+        if (parseTokenCount(thresholdDraft) === null) return
         if (thresholdDraft === props.settings.compactionThreshold) return
 
         await props.onPatch({ compactionThreshold: thresholdDraft })

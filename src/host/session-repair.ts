@@ -19,7 +19,8 @@
  * `llm/retry-started` 按 (retryId, retry) 同步改写，并把 `normal` 模式的 `maxRetries` 抬到
  * 不小于本条序号——真机样本 `dfd3eb08…` 同链两条 `retry = 1` 且 `maxRetries = 1`，序号重排
  * 成 2 后不改它仍会被平台拒），再**展开**序号范围编码。只有**修完再校验通过**才写回磁盘；写回用
- * 「临时文件 + rename」原子替换，任何一步失败都不落盘。
+ * 「临时文件 + rename」原子替换，任何一步失败都不落盘。展开有单条范围上界
+ * （`SEQ_RANGE_MAX_SPAN`）：损伤值跨 5E7 时不展开、报「修不了」，免得同步卡住宿主进程。
  *
  * **平台包按两个候选定位。** 三个平台包（持久化 jsonl / v3-to-v4 格式 / session 事件表）不写死
  * 绝对路径：先 resolve 一个能解析到的包，再从它的入口路径派生出 `@deepseek-ai` 目录，按同级
@@ -37,12 +38,14 @@
  * @module dsh-harden/session-repair
  */
 
+import { randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { constants, zstdCompressSync, zstdDecompressSync } from 'node:zlib'
 import { existsSync } from 'node:fs'
-import { readFile, readdir, rename, writeFile } from 'node:fs/promises'
+import { readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join, sep } from 'node:path'
 
+import { errText } from './shared-format.js'
 import { 重试链账本 } from './retry-chain-ledger.js'
 
 /** 会话文件名。 */
@@ -134,6 +137,9 @@ export async function scanSessionFiles(会话根目录: string): Promise<string[
  * 重试链规范化与序号范围编码展开 → 改后再校验 → 过了才写回，不过则不落盘。
  * 校验不通过时把平台的原话带进 reason，便于判断损坏形态。
  *
+ * 读、解码、拆解任一步失败都只算**这一个文件**失败（报 read-failed，异常不外抛）——异常逃出去
+ * 会让整个扫描端点 400 空响应，一个坏文件把其余会话全拖下水。
+ *
  * @param 文件路径 - 会话文件路径。
  * @param 校验器 - 可注入的校验器；缺省时用两候选定位加载的平台校验器。
  * @returns 修复结果。
@@ -144,7 +150,7 @@ export async function repairSessionFile(文件路径: string, 校验器?: Sessio
         文件内容 = await readFile(文件路径)
 
     } catch (err) {
-        return { filePath: 文件路径, status: 'read-failed', reason: `读取失败：${错误文本(err)}`, changedCategories: [] }
+        return { filePath: 文件路径, status: 'read-failed', reason: `读取失败：${errText(err)}`, changedCategories: [] }
     }
 
     let 解码结果: DecodedSession
@@ -152,27 +158,43 @@ export async function repairSessionFile(文件路径: string, 校验器?: Sessio
         解码结果 = decodeSessionFile(文件内容)
 
     } catch (err) {
-        return { filePath: 文件路径, status: 'read-failed', reason: `解码失败：${错误文本(err)}`, changedCategories: [] }
+        return { filePath: 文件路径, status: 'read-failed', reason: `解码失败：${errText(err)}`, changedCategories: [] }
     }
 
-    const { header, events } = splitHeaderAndEvents(解码结果.lines)
+    let 拆解结果: { header: Record<string, unknown>; events: unknown[] }
+    try {
+        拆解结果 = splitHeaderAndEvents(解码结果.lines)
+
+    } catch (err) {
+        return { filePath: 文件路径, status: 'read-failed', reason: `解析失败：${errText(err)}`, changedCategories: [] }
+    }
 
     let 实际校验器: SessionValidator
     try {
         实际校验器 = 校验器 ?? loadPlatformValidator()
 
     } catch (err) {
-        return { filePath: 文件路径, status: 'unrepairable', reason: `平台校验器不可用：${错误文本(err)}`, changedCategories: [] }
+        return { filePath: 文件路径, status: 'unrepairable', reason: `平台校验器不可用：${errText(err)}`, changedCategories: [] }
     }
 
-    const 首检 = 跑校验(实际校验器, header, events)
+    const 首检 = 跑校验(实际校验器, 拆解结果.header, 拆解结果.events)
     if (首检.通过) {
         return { filePath: 文件路径, status: 'intact', reason: '校验通过，无需修复', changedCategories: [] }
     }
 
     const 改动类别组: RepairCategory[] = []
-    if (normalizeRetryChain(events)) 改动类别组.push('retry-chain-normalized')
-    if (expandSourceEventSeqs(events)) 改动类别组.push('sourceEventSeqs-expanded')
+    if (normalizeRetryChain(拆解结果.events)) 改动类别组.push('retry-chain-normalized')
+
+    const 展开结果 = expandSourceEventSeqs(拆解结果.events)
+    if (展开结果.放弃原因 !== null) {
+        return {
+            filePath: 文件路径,
+            status: 'unrepairable',
+            reason: `修不了：${展开结果.放弃原因}`,
+            changedCategories: [],
+        }
+    }
+    if (展开结果.有改动) 改动类别组.push('sourceEventSeqs-expanded')
 
     if (改动类别组.length === 0) {
         return {
@@ -183,7 +205,7 @@ export async function repairSessionFile(文件路径: string, 校验器?: Sessio
         }
     }
 
-    const 复检 = 跑校验(实际校验器, header, events)
+    const 复检 = 跑校验(实际校验器, 拆解结果.header, 拆解结果.events)
     if (复检.通过 === false) {
         return {
             filePath: 文件路径,
@@ -193,13 +215,22 @@ export async function repairSessionFile(文件路径: string, 校验器?: Sessio
         }
     }
 
+    // 临时名带随机后缀：两次点击或两个标签页并发修同一个文件时不能共用同一个临时路径。
+    const 临时路径 = `${文件路径}.${randomBytes(6).toString('hex')}.tmp`
     try {
-        const 临时路径 = `${文件路径}.repairing-${process.pid}`
         await writeFile(临时路径, encodeSessionFile(解码结果.lines, 解码结果.frameLineCounts))
         await rename(临时路径, 文件路径)
 
     } catch (err) {
-        return { filePath: 文件路径, status: 'unrepairable', reason: `写回失败：${错误文本(err)}`, changedCategories: [] }
+        try {
+            // force: true 已吞掉「文件不存在」；走到这里只能是句柄占用一类的清理失败。
+            await rm(临时路径, { force: true })
+
+        } catch {
+            // 清理是尽力而为：残留一个临时文件，比盖掉真正的失败原因轻。
+        }
+
+        return { filePath: 文件路径, status: 'unrepairable', reason: `写回失败：${errText(err)}`, changedCategories: [] }
     }
 
     return { filePath: 文件路径, status: 'repaired', reason: `已修复：${改动类别组.join('、')}`, changedCategories: 改动类别组 }
@@ -240,18 +271,34 @@ export function normalizeRetryChain(events: unknown[]): boolean {
     return 有改动
 }
 
+/** 单条序号范围的展开上界：损伤值可能跨 5E7，展开会同步阻塞整个宿主进程。 */
+const SEQ_RANGE_MAX_SPAN = 100_000
+
+/** 序号范围展开的结果。 */
+export interface SeqsExpandOutcome {
+    /** 是否真的改动了内容。 */
+    有改动: boolean
+    /** 遇到跨度过大的范围时的原因（拿不准就不落盘）；没有就是 null。 */
+    放弃原因: string | null
+}
+
 /**
  * 序号范围编码展开：遍历所有事件，把 `sourceEventSeqs` 里的 `[start, end]` 展开成扁平数字。
  *
+ * 范围跨度超过 `SEQ_RANGE_MAX_SPAN` 时立刻带原因返回，不展开——损伤值展开 5E7 个数会同步
+ * 卡住宿主事件循环，比「修不了」严重得多。
+ *
  * @param events - 会话事件组（会被原地修改）。
- * @returns 是否真的改动了内容。
+ * @returns 展开结果：是否改了内容，以及遇到跨度过大的范围时放弃的原因。
  */
-export function expandSourceEventSeqs(events: unknown[]): boolean {
+export function expandSourceEventSeqs(events: unknown[]): SeqsExpandOutcome {
     let 有改动 = false
     for (const event of events) {
-        if (展开节点内序号范围(event, 'sourceEventSeqs')) 有改动 = true
+        const 子结果 = 展开节点内序号范围(event, 'sourceEventSeqs')
+        if (子结果.放弃原因 !== null) return 子结果
+        if (子结果.有改动) 有改动 = true
     }
-    return 有改动
+    return { 有改动, 放弃原因: null }
 }
 
 /**
@@ -323,7 +370,7 @@ function decodeSessionFile(content: Buffer): DecodedSession {
     for (const frame of frames) {
         const plainText = zstdDecompressSync(content.subarray(frame.start, frame.end)).toString('utf8')
         const 分段组 = plainText.split('\n')
-        if (分段组.length > 0 && 分段组[分段组.length - 1] === '') 分段组.pop()
+        if (分段组[分段组.length - 1] === '') 分段组.pop()
         for (const line of 分段组) lines.push(JSON.parse(line))
         frameLineCounts.push(分段组.length)
     }
@@ -392,20 +439,23 @@ function 读事件数据(event: unknown): Record<string, unknown> | null {
  * 递归展开一个节点下所有指定字段名里的范围编码。
  *
  * 事件形状不保证 `sourceEventSeqs` 一定在 data 顶层，故按对象树递归查找。`[start, end]`
- * 形式的子数组展开成连续数字；无可展开子数组时原样保留。
+ * 形式的子数组展开成连续数字；无可展开子数组时原样保留。遇到跨度过大的范围立刻带原因返回，
+ * 由递归各层原样上抛——继续展开其余字段没有意义，调用方拿不准就不落盘。
  *
  * @param node - 待检查的节点。
  * @param 字段名 - 要展开的字段名。
- * @returns 是否真的改动了内容。
+ * @returns 展开结果：是否真的改动了内容，以及放弃原因。
  */
-function 展开节点内序号范围(node: unknown, 字段名: string): boolean {
-    if (node === null || typeof node !== 'object') return false
+function 展开节点内序号范围(node: unknown, 字段名: string): SeqsExpandOutcome {
+    if (node === null || typeof node !== 'object') return { 有改动: false, 放弃原因: null }
     if (Array.isArray(node)) {
         let 有改动 = false
         for (const 子项 of node) {
-            if (展开节点内序号范围(子项, 字段名)) 有改动 = true
+            const 子结果 = 展开节点内序号范围(子项, 字段名)
+            if (子结果.放弃原因 !== null) return 子结果
+            if (子结果.有改动) 有改动 = true
         }
-        return 有改动
+        return { 有改动, 放弃原因: null }
     }
 
     const 记录 = node as Record<string, unknown>
@@ -420,6 +470,13 @@ function 展开节点内序号范围(node: unknown, 字段名: string): boolean 
                 if (是范围) {
                     const 起始序号 = 序号项[0] as number
                     const 结束序号 = 序号项[1] as number
+                    const 跨度 = 结束序号 - 起始序号 + 1
+                    if (跨度 > SEQ_RANGE_MAX_SPAN) {
+                        return {
+                            有改动: false,
+                            放弃原因: `sourceEventSeqs 的序号范围 [${起始序号}, ${结束序号}] 跨度过大（上限 ${SEQ_RANGE_MAX_SPAN}），展开会卡住进程`,
+                        }
+                    }
                     for (let 序号 = 起始序号; 序号 <= 结束序号; 序号 += 1) 展开组.push(序号)
                     有展开 = true
                     continue
@@ -432,9 +489,11 @@ function 展开节点内序号范围(node: unknown, 字段名: string): boolean 
             }
             continue
         }
-        if (展开节点内序号范围(字段值, 字段名)) 有改动 = true
+        const 子结果 = 展开节点内序号范围(字段值, 字段名)
+        if (子结果.放弃原因 !== null) return 子结果
+        if (子结果.有改动) 有改动 = true
     }
-    return 有改动
+    return { 有改动, 放弃原因: null }
 }
 
 /** 一个平台包候选：从它出发能定位到平台的 `@deepseek-ai` 目录。 */
@@ -491,7 +550,7 @@ export function 加载平台包组(
             return 包组
 
         } catch (err) {
-            失败原因组.push(`${候选.说明}：${错误文本(err)}`)
+            失败原因组.push(`${候选.说明}：${errText(err)}`)
             continue
         }
     }
@@ -543,12 +602,6 @@ function 跑校验(校验器: SessionValidator, header: Record<string, unknown>,
         return { 通过: true, 原因: '' }
 
     } catch (err) {
-        return { 通过: false, 原因: 错误文本(err) }
+        return { 通过: false, 原因: errText(err) }
     }
-}
-
-/** 把异常转成一行文本。 */
-function 错误文本(err: unknown): string {
-    if (err instanceof Error) return err.message
-    return String(err)
 }

@@ -39,7 +39,7 @@ export interface HardenConfig {
     networkRetryTokens?: string
     /** 工具 `job_background`（把命令放后台 job 执行）的开关。默认 true。 */
     backgroundJobTool?: boolean
-    /** 规则「上下文自动压缩」的开关。默认 true。 */
+    /** 规则「上下文自动压缩」的开关。默认 false（见 config.ts 的 DEFAULT_CONTEXT_COMPACTION）。 */
     contextCompaction?: boolean
     /** 规则「上下文自动压缩」：总开关打开时，压缩作用在哪些会话上。默认 `all`。 */
     compactionScope?: CompactionScope

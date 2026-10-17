@@ -16,7 +16,7 @@
   <a href="https://github.com/thissensen/dsh-harden">GitHub</a>
 </p>
 
-> **Status**: guard rules H1, H2 and H3 are all implemented; **all 226 tests pass**, typecheck is clean, and the build succeeds.
+> **Status**: guard rules H1, H2 and H3 are all implemented; **all 353 tests pass (17 test files)**, typecheck is clean, and the build succeeds.
 
 ## What it solves
 
@@ -39,7 +39,7 @@ In one sentence: **an explicit failure is fine; a silent stop is not.**
 - **Recover a turn that ends without any reply text** — when the last step has only reasoning, the turn is pulled back for one more step.
 - **Continue after a network interruption** — after the official retry budget runs out, the plugin adds extra attempts for the failure kinds you list.
 - **Background task tool** — gives the model a `job_background` tool to run long commands in the background without blocking the turn.
-- **Unbounded and switchable** — no cap on injections, and every guard rule has its own toggle (the write-side protection is always on).
+- **Unbounded and switchable** — no cap on injections; every guard rule has its own toggle, while the write-side protection and the automatic repair for subagent sessions have no toggle and are always on.
 - **Never touches your config or patches the platform** — switches live in the platform `settings`; it only listens to public events and patches no `@deepseek-ai/*` package.
 - **One-click repair of corrupted session logs** — when a session log gets corrupted and the platform refuses to open the history, the settings page scans and repairs it in one click.
 - **Automatic context compaction** — once the conversation grows past a threshold, the older history is condensed into a summary; the UI reuses the platform's own notice.
@@ -72,6 +72,8 @@ When a turn ends with only reasoning and no reply text, the plugin asks the mode
   <img src="./assets/settings-en-light.png" width="45%" alt="Settings (English · light)">
   <img src="./assets/settings-en-dark.png" width="45%" alt="Settings (English · dark)">
 </p>
+
+> The settings screenshots come from an older version of the panel; the card wording may not match the current UI exactly — the live screen is authoritative.
 
 ## Install
 
@@ -135,6 +137,8 @@ The settings page lives under the "DSH Optimize" section and has **eight** cards
 | **Automatic repair for broken subagent sessions** | **No toggle — always on.** When the platform is about to store a non-conforming retry event, the plugin corrects it before it is written, so the session never becomes unopenable. A light note appears at the end of the turn when a correction happens; corrections are recorded in the session log, so it **still shows after a restart**. |
 | **Repair corrupted sessions** | Scan button. Scans every session log and repairs the known kinds of corruption, so a history that refuses to open becomes usable again. |
 
+The header also carries a **"Check for updates"** button: it goes through the plugin's own host endpoint, which queries npm for the latest version (the result is cached for 5 minutes). When a newer version exists the button shows the version number right away and opens the npm page when clicked; when offline or behind a proxy it shows "Update check failed; click to retry".
+
 > ⚠️ **The one that matters most**: **"Failure warning prefixes" is empty by default, so leaving it blank after install means rule H1 is off.** Open the settings page and paste the fixed beginning of your platform's warning text (example: `⚠ Could not execute tool`).
 
 ## Development
@@ -144,7 +148,7 @@ pnpm install
 node scripts/link-deps.mjs    # link host packages into this project's node_modules
 pnpm build                     # tsc (host) + vite (client)
 pnpm typecheck                 # type check only
-pnpm test                      # vitest, 226 tests
+pnpm test                      # vitest, 353 tests (17 test files)
 ```
 
 ## Design

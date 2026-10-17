@@ -16,7 +16,6 @@ import {
     DEFAULT_COMPACTION_THRESHOLD,
     DEFAULT_CONTEXT_COMPACTION,
     DEFAULT_EMPTY_OUTPUT_GUARD,
-    DEFAULT_NETWORK_RETRY_COUNT,
     DEFAULT_NETWORK_RETRY_TOKENS,
     DEFAULT_COMPACTION_SCOPE,
     DEFAULT_TOOL_FAILURE_GUARD,
@@ -24,6 +23,7 @@ import {
     defaultConfig,
     readConfig,
 } from '../src/host/config.js'
+import { DEFAULT_NETWORK_RETRY_COUNT } from '../src/host/shared-format.js'
 
 describe('配置层默认值', () => {
     it('readConfig 忽略已移除的 openFolderVisible 字段', () => {
@@ -69,6 +69,14 @@ describe('配置层默认值', () => {
         expect(config.compactionScope).toBe(DEFAULT_COMPACTION_SCOPE)
         expect(config.compactionThreshold).toBe(DEFAULT_COMPACTION_THRESHOLD)
         expect(config.compactionInstruction).toBe(DEFAULT_COMPACTION_INSTRUCTION)
+    })
+
+    it('networkRetryCount 的默认值与共享口径常量同源（跨半边只有一份）', () => {
+        expect(defaultConfig().networkRetryCount).toBe(DEFAULT_NETWORK_RETRY_COUNT)
+    })
+
+    it('contextCompaction 默认关（钉住 types.ts 那条注释的口径）', () => {
+        expect(defaultConfig().contextCompaction).toBe(false)
     })
 
     it('压缩范围默认全部压缩，且能解包 volatile 引用', () => {

@@ -16,8 +16,17 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
-import { repairSessionFile, scanSessionFiles } from './session-repair.js'
+import { repairSessionFile, scanSessionFiles, type RepairOutcome } from './session-repair.js'
 import { 获取全部拦截记录 } from './retry-intercept.js'
+import {
+    COMPACTION_INSTRUCTION_MAX_LENGTH,
+    RETRY_COUNT_MAX,
+    RETRY_COUNT_MIN,
+    RETRY_TOKENS_MAX_LENGTH,
+    TOOL_FAILURE_PREFIXES_MAX_LENGTH,
+    errText,
+    parseTokenCount,
+} from './shared-format.js'
 import type { Ctx, HardenConfig, Logger, WebServerService, 会话查询面 } from './types.js'
 
 /** 本插件的路由前缀。 */
@@ -36,6 +45,13 @@ const MAX_BODY_BYTES = 1 << 20
 
 /** 会话仓库目录名（DSH_HOME 下面那一层）。 */
 const SESSIONS_DIR_NAME = 'sessions'
+
+/** npm 上本包的最新版本（dist-tag latest）。 */
+const VERSION_ENDPOINT_URL = 'https://registry.npmjs.org/dsh-harden/latest'
+/** registry 卡住时不能让设置页一直转。 */
+const VERSION_TIMEOUT_MS = 5000
+/** 同一份结果 5 分钟内复用：用户连点按钮不该反复打 registry。 */
+const VERSION_CACHE_MS = 5 * 60 * 1000
 
 /** 围栏的拒绝结果（通过时返回 null）。 */
 export interface GuardReject {
@@ -60,6 +76,8 @@ export interface ApiDeps {
     getScope: () => ConfigScope | undefined
     /** 用户显式信任的 authority 清单（`readTrustedHosts` 双读 `webRuntime` / `webStartup`）；为空时只允许回环地址。 */
     trustedHosts?: string[]
+    /** 查 npm 上本包的最新版本；缺省真查 registry，测试注入假实现而不发网络请求。 */
+    取最新版本?: () => Promise<string>
     /**
      * 现问现取：平台的会话查询服务，读一份「没打开过」的会话日志里的记录用。
      *
@@ -282,8 +300,10 @@ export function readJsonBody(req: IncomingMessage, maxBytes: number = MAX_BODY_B
 
             try {
                 const raw = Buffer.concat(chunks).toString('utf8')
+                const body = raw === '' ? {} : JSON.parse(raw)
+                // 先解析成功再置 settled：畸形 JSON 走到 catch 时 fail 还能把 Promise 拒绝掉。
                 settled = true
-                resolve(raw === '' ? {} : JSON.parse(raw))
+                resolve(body)
 
             } catch (error) {
                 fail(Object.assign(Error(`invalid JSON body: ${(error as Error).message}`), { statusCode: 400 }))
@@ -292,12 +312,6 @@ export function readJsonBody(req: IncomingMessage, maxBytes: number = MAX_BODY_B
 
         req.on('error', fail)
     })
-}
-
-/** 把异常转成可进响应体的一行（有 message 用 message，否则退回原值）。 */
-export function errText(error: unknown): string {
-    const message = (error as { message?: unknown } | null | undefined)?.message
-    return message === undefined || message === null ? String(error) : String(message)
 }
 
 /**
@@ -310,27 +324,23 @@ function escapeArg(text: string): string {
 }
 
 /**
- * 把阈值文本解析成正整数：`K` 等于 1000、`M` 等于 1000000，不区分大小写，允许首尾空白。
+ * 查 npm 上本包的最新版本（dist-tag latest）。
  *
- * 口径与看护侧（compaction.ts 的 parseTokenCount）一致；这里不去 import 那份实现，
- * 两边各自守住同一套规则，client 发来的值先在这里挡下非法输入。
+ * 设置页直连 registry 会踩跨域与代理，这一步必须由 host 去查。
  *
- * @param text - 待解析的阈值文本。
- * @returns 解析出的正整数；格式不对或不是正数时返回 null。
+ * @returns registry 回的 `version` 字段。
  */
-function parseThresholdText(text: string): number | null {
-    const trimmed = text.trim()
-    const matched = /^(\d+)([KkMm]?)$/.exec(trimmed)
-    if (matched === null) return null
+async function fetchLatestVersion(): Promise<string> {
+    const response = await fetch(VERSION_ENDPOINT_URL, {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(VERSION_TIMEOUT_MS),
+    })
+    if (response.ok === false) throw Error(`HTTP ${response.status}`)
 
-    const base = Number.parseInt(matched[1], 10)
-    if (base <= 0) return null
+    const body = await response.json() as { version?: unknown }
+    if (typeof body.version !== 'string' || body.version === '') throw Error('registry response has no version')
 
-    const unit = matched[2].toUpperCase()
-    if (unit === 'K') return base * 1000
-    if (unit === 'M') return base * 1000000
-
-    return base
+    return body.version
 }
 
 /**
@@ -369,7 +379,7 @@ async function handleGetRetryIntercepts(url: URL, res: ServerResponse, deps: Api
 /**
  * `POST /config`：把设置页发来的配置写回平台 settings。
  *
- * 字段只有一个，但类型校验照做：手改请求、老客户端都可能发来别的东西，
+ * 每个字段都照做类型校验：手改请求、老客户端都可能发来别的东西，
  * 与其让平台 schema 抛错冒到 handler 外，不如在这里回 400。
  *
  * @param req - Node 的请求对象。
@@ -412,19 +422,19 @@ async function handleUpdateConfig(req: IncomingMessage, res: ServerResponse, dep
     }
 
     const networkRetryCount = body?.networkRetryCount
-    if (typeof networkRetryCount !== 'number' || Number.isInteger(networkRetryCount) === false || networkRetryCount < 0 || networkRetryCount > 99) {
+    if (typeof networkRetryCount !== 'number' || Number.isInteger(networkRetryCount) === false || networkRetryCount < RETRY_COUNT_MIN || networkRetryCount > RETRY_COUNT_MAX) {
         json(res, 400, { ok: false, error: 'api.networkRetryCountInvalid' })
         return
     }
 
     const networkRetryTokens = body?.networkRetryTokens
-    if (typeof networkRetryTokens !== 'string' || networkRetryTokens.length > 200) {
+    if (typeof networkRetryTokens !== 'string' || networkRetryTokens.length > RETRY_TOKENS_MAX_LENGTH) {
         json(res, 400, { ok: false, error: 'api.networkRetryTokensInvalid' })
         return
     }
 
     const toolFailurePrefixes = body?.toolFailurePrefixes
-    if (typeof toolFailurePrefixes !== 'string' || toolFailurePrefixes.length > 2000) {
+    if (typeof toolFailurePrefixes !== 'string' || toolFailurePrefixes.length > TOOL_FAILURE_PREFIXES_MAX_LENGTH) {
         json(res, 400, { ok: false, error: 'api.toolFailurePrefixesInvalid' })
         return
     }
@@ -456,13 +466,13 @@ async function handleUpdateConfig(req: IncomingMessage, res: ServerResponse, dep
     }
 
     const compactionThreshold = body?.compactionThreshold
-    if (typeof compactionThreshold !== 'string' || parseThresholdText(compactionThreshold) === null) {
+    if (typeof compactionThreshold !== 'string' || parseTokenCount(compactionThreshold) === null) {
         json(res, 400, { ok: false, error: 'api.compactionThresholdInvalid' })
         return
     }
 
     const compactionInstruction = body?.compactionInstruction
-    if (typeof compactionInstruction !== 'string' || compactionInstruction.length > 10000) {
+    if (typeof compactionInstruction !== 'string' || compactionInstruction.length > COMPACTION_INSTRUCTION_MAX_LENGTH) {
         json(res, 400, { ok: false, error: 'api.compactionInstructionInvalid' })
         return
     }
@@ -544,7 +554,15 @@ async function handleRepairSessions(req: IncomingMessage, res: ServerResponse, d
     let 读取失败数 = 0
 
     for (const 文件路径 of 文件组) {
-        const 结果 = await repairSessionFile(文件路径)
+        let 结果: RepairOutcome
+        try {
+            结果 = await repairSessionFile(文件路径)
+
+        } catch (err) {
+            // 单个文件出意外只算它自己失败：一次扫描要覆盖几百个会话文件，不能因为一个坏文件全盘作废。
+            结果 = { filePath: 文件路径, status: 'read-failed', reason: `未预期的失败：${errText(err)}`, changedCategories: [] }
+        }
+
         明细组.push({ filePath: 结果.filePath, status: 结果.status, reason: 结果.reason })
 
         if (结果.status === 'intact') {
@@ -580,7 +598,7 @@ async function handleRepairSessions(req: IncomingMessage, res: ServerResponse, d
  *
  * @param ctx - 插件所在的 context。
  * @param logger - 日志出口。
- * @param deps - `{ getScope, trustedHosts, 取会话查询 }`。
+ * @param deps - `{ getScope, trustedHosts, 取最新版本, 取会话查询 }`。
  */
 export function mountApi(ctx: Ctx, logger: Logger, deps: ApiDeps): void {
     const webServer = ctx.webServer as WebServerService | undefined
@@ -590,6 +608,35 @@ export function mountApi(ctx: Ctx, logger: Logger, deps: ApiDeps): void {
     }
 
     const trustedHosts = deps.trustedHosts ?? []
+
+    /** 最近一次查询成功的版本；失败不写缓存，见 handleGetLatestVersion。 */
+    let 版本缓存: { 版本: string; 时间戳: number } | null = null
+
+    /**
+     * `GET /latest-version`：把 npm 上的最新版本交给设置页页头。
+     *
+     * **缓存住在挂载闭包里。** 5 分钟内复用同一份结果，用户连点按钮不会反复打 registry；
+     * 缓存随每次挂载重建，不需要给测试留「清空缓存」的出口。
+     *
+     * @param res - Node 的响应对象。
+     */
+    async function handleGetLatestVersion(res: ServerResponse): Promise<void> {
+        const 取最新版本 = deps.取最新版本 ?? fetchLatestVersion
+        if (版本缓存 !== null && Date.now() - 版本缓存.时间戳 < VERSION_CACHE_MS) {
+            json(res, 200, { ok: true, 最新版本: 版本缓存.版本 })
+            return
+        }
+
+        try {
+            const 版本 = await 取最新版本()
+            版本缓存 = { 版本, 时间戳: Date.now() }
+            json(res, 200, { ok: true, 最新版本: 版本 })
+
+        } catch (err) {
+            // 失败不缓存：离线、代理不通、registry 读副本刚发布还 404，都要能立刻重试。
+            json(res, 502, { ok: false, error: `api.versionCheckFailed|${escapeArg(errText(err))}` })
+        }
+    }
 
     webServer.register({
         kind: 'prefix',
@@ -613,6 +660,11 @@ export function mountApi(ctx: Ctx, logger: Logger, deps: ApiDeps): void {
             if (req.method === 'GET' && path === `${API_PREFIX}/retry-intercepts`) {
                 // GET 走读围栏（上面那道），不需要写端点的自定义头与 content-type。
                 await handleGetRetryIntercepts(url, res, deps)
+                return
+            }
+
+            if (req.method === 'GET' && path === `${API_PREFIX}/latest-version`) {
+                await handleGetLatestVersion(res)
                 return
             }
 
