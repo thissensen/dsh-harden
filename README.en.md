@@ -16,7 +16,7 @@
   <a href="https://github.com/thissensen/dsh-harden">GitHub</a>
 </p>
 
-> **Status**: guard rules H1, H2 and H3 are all implemented; **all 353 tests pass (17 test files)**, typecheck is clean, and the build succeeds.
+> **Status**: guard rules H1, H2 and H3 are all implemented; **all 351 tests pass (17 test files)**, typecheck is clean, and the build succeeds.
 
 ## What it solves
 
@@ -148,7 +148,7 @@ pnpm install
 node scripts/link-deps.mjs    # link host packages into this project's node_modules
 pnpm build                     # tsc (host) + vite (client)
 pnpm typecheck                 # type check only
-pnpm test                      # vitest, 353 tests (17 test files)
+pnpm test                      # vitest, 351 tests (17 test files)
 ```
 
 ## Design

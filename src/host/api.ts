@@ -74,35 +74,25 @@ export interface ConfigScope {
 export interface ApiDeps {
     /** 现问现取：设置服务的就绪时机与路由注册的先后顺序不作保证。 */
     getScope: () => ConfigScope | undefined
-    /** 用户显式信任的 authority 清单（`readTrustedHosts` 双读 `webRuntime` / `webStartup`）；为空时只允许回环地址。 */
+    /** 用户显式信任的 authority 清单（`readTrustedHosts` 从 `webStartup` 取）；为空时只允许回环地址。 */
     trustedHosts?: string[]
     /** 查 npm 上本包的最新版本；缺省真查 registry，测试注入假实现而不发网络请求。 */
     取最新版本?: () => Promise<string>
     /**
      * 现问现取：平台的会话查询服务，读一份「没打开过」的会话日志里的记录用。
      *
-     * **为什么不进 inject 列表**：桌面端 asar 0.2.0-rc.2 没有这个服务，把服务名写进 `inject` 会让整条
-     * 配置通路静默挂不上（`05-坑册.md` 坑 37）；`ctx.get` 缺服务时如实回 `undefined`，端点退回只有
-     * 内存账本与会话对象两条源（与采用冷读前一致）。
+     * **为什么不进 inject 列表**：这个服务由平台内的另一个插件行提供、精简 profile 可能没挂它，把服务名
+     * 写进 `inject` 会让整条配置通路静默挂不上（`05-坑册.md` 坑 37）；`ctx.get` 缺服务时如实回
+     * `undefined`，端点退回只有内存账本与会话对象两条源。
      */
     取会话查询: () => 会话查询面 | undefined
-}
-
-/** 从平台服务上摘 `trustedHosts`：服务缺席或该字段不是数组时返回 undefined（当作「没有这个来源」）。 */
-function takeTrustedHosts(service: unknown): string[] | undefined {
-    const trustedHosts = (service as { trustedHosts?: unknown } | undefined)?.trustedHosts
-    if (Array.isArray(trustedHosts) === false) return undefined
-
-    return trustedHosts as string[]
 }
 
 /**
  * 取用户显式信任的 authority 清单。
  *
- * **为什么双读。** 平台在不同运行时把这份清单挂在不同服务上：桌面端 0.2.0-rc.2 用
- * `webRuntime`（bind 之后的 LAN 字面量），0.2.1-alpha.5 移除了该服务、只剩 `webStartup`。
- * 按这个顺序取第一个拿得到的；空数组也是合法清单，不继续往下找。两个都拿不到就回空清单——
- * 围栏随之退化成只允许回环地址，是安全默认。
+ * **唯一来源是 `webStartup`。** 平台把 `--trusted-host` 传进来的显式信任清单挂在这个服务上；
+ * 服务缺席或字段形状不可用就回空清单——围栏随之退化成只允许回环地址，是安全默认。
  *
  * **为什么必须用 `ctx.get`。** 把服务名写进 `inject` 列表会让「服务不存在」变成「回调永不
  * 执行」；属性访问未声明的服务会抛。`ctx.get` 不需要声明，缺服务时如实返回 undefined。
@@ -111,29 +101,25 @@ function takeTrustedHosts(service: unknown): string[] | undefined {
  * @returns 信任清单；拿不到就是空数组。
  */
 export function readTrustedHosts(ctx: Ctx): string[] {
-    if (typeof ctx.get !== 'function') return []
+    const webStartup = ctx.get('webStartup') as { trustedHosts?: unknown } | undefined
+    const trustedHosts = webStartup?.trustedHosts
+    // 服务值是外部输入，围栏不能因为它抛错。
+    if (Array.isArray(trustedHosts) === false) return []
 
-    const runtimeHosts = takeTrustedHosts(ctx.get('webRuntime'))
-    if (runtimeHosts !== undefined) return runtimeHosts
-
-    const startupHosts = takeTrustedHosts(ctx.get('webStartup'))
-
-    return startupHosts ?? []
+    return trustedHosts as string[]
 }
 
 /**
  * 取平台的会话查询服务（`ctx.sessionQuery`）。
  *
- * **为什么必须用 `ctx.get`。** 桌面端 asar 0.2.0-rc.2 没有这个服务；把服务名写进 `inject` 会让整条
- * 配置通路静默挂不上（`05-坑册.md` 坑 37）。`ctx.get` 不需要声明，缺服务时如实返回 `undefined`
- * ——只读端点随之退回只有内存账本与会话对象两条源。
+ * **为什么必须用 `ctx.get`。** 这个服务由平台内的另一个插件行提供（精简 profile 可能没挂），把服务名
+ * 写进 `inject` 会让整条配置通路静默挂不上（`05-坑册.md` 坑 37）。`ctx.get` 不需要声明，缺服务时
+ * 如实返回 `undefined`——只读端点随之退回只有内存账本与会话对象两条源。
  *
  * @param ctx - 插件所在的 context（可以是 inject 回调里那个子 context）。
  * @returns 会话查询服务；本进程没有就是 undefined。
  */
 export function readSessionQuery(ctx: Ctx): 会话查询面 | undefined {
-    if (typeof ctx.get !== 'function') return undefined
-
     return ctx.get<会话查询面>('sessionQuery')
 }
 

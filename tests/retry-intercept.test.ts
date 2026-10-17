@@ -390,10 +390,18 @@ describe('安装与幂等', () => {
         expect(结果).toBe(决定)
     })
 
-    it('会话没有写入面（append）时跳过安装，监听器不抛', async () => {
-        const 无写入口会话 = { header: { id: '无写入口-1' } }
+    it('载荷里的 session 形状不合法（不是对象）时跳过安装、不抛', async () => {
+        // 载荷来自平台、拿到手是 unknown：形状必须自验——不是对象、或没有写入面的会话一律跳过
+        // （`agent/created` 是 serial，监听器抛错会让平台创建 agent 失败）。
+        await expect(测试环境.派发('agent/created', { agent: { session: '不是会话对象' } })).resolves.toBeUndefined()
 
-        await expect(测试环境.派发('agent/created', { agent: { session: 无写入口会话 } })).resolves.toBeUndefined()
+        const 半截会话 = { header: { id: '形状不合法-1' } }
+        await expect(测试环境.派发('agent/created', { agent: { session: 半截会话 } })).resolves.toBeUndefined()
+
+        // 确实没装上：会话没进注册表，按 id 读记录时走冷读（问平台要整份日志），不走对象上的实时读面。
+        const { 查询, 读入ID组 } = 造会话查询([])
+        expect(await 获取全部拦截记录('形状不合法-1', 查询)).toEqual([])
+        expect(读入ID组).toEqual(['形状不合法-1'])
     })
 })
 

@@ -113,22 +113,16 @@ export function apply(ctx: Ctx, config: unknown): void {
  * 就绪时机与本插件的 `apply` 先后顺序不作保证；等它们都到齐了再建作用域、再注册路由，
  * 比在 `apply` 时赌一把稳。缺服务时回调根本不会被调用——与「缺省不干预」一致。
  *
- * **可选服务绝不能进 inject 列表**：0.2.1-alpha.5 已移除 `webRuntime`，注入了它的回调整条
- * 永不执行（fiber 停在 INACTIVE）⇒ 配置通路静默挂不上；会话查询服务（`sessionQuery`）同理
- * ——桌面端 asar 0.2.0-rc.2 没有它。信任清单改由 `readTrustedHosts` 按运行时双读
- * （`webRuntime` → `webStartup`），拿不到就只允许回环地址；会话查询由 `readSessionQuery` 现取，
- * 拿不到就只回内存账本。
+ * **可选服务绝不能进 inject 列表**：注入了不存在的服务，回调整条永不执行（fiber 停在
+ * INACTIVE）⇒ 配置通路静默挂不上（`.harness/05-坑册.md` 坑 37）。信任清单由
+ * `readTrustedHosts` 取平台运行时的 `webStartup`，拿不到就只允许回环地址；会话查询由
+ * `readSessionQuery` 现取，拿不到就只回内存账本。
  *
  * @param ctx - cordis 上下文。
  * @param logger - 日志出口。
  * @param config - `apply` 收到的原始配置对象（含 volatile 引用；每次读取都要现取现解包）。
  */
 function mountConfigApi(ctx: Ctx, logger: Logger, config: unknown): void {
-    if (typeof ctx.inject !== 'function') {
-        logger.warn?.('[harden] ctx.inject 不可用，设置页的配置通路未挂上')
-        return
-    }
-
     ctx.inject(['webServer', 'settings'], (webCtx: Ctx) => {
         const settings = webCtx.settings
         if (settings === undefined) return
@@ -143,7 +137,7 @@ function mountConfigApi(ctx: Ctx, logger: Logger, config: unknown): void {
         mountApi(webCtx, logger, {
             getScope: () => scope,
             trustedHosts,
-            // 现取、不进 inject 列表：rc.2 没有这个服务（见 api.ts 的 ApiDeps.取会话查询）。
+            // 现取、不进 inject 列表：服务由平台内另一个插件行提供，缺席就只回内存账本。
             取会话查询: () => readSessionQuery(webCtx),
         })
     })
@@ -175,11 +169,6 @@ function mountTurnStoppingGuard(
     state: HardenState,
     current: () => Required<HardenConfig>,
 ): void {
-    if (typeof ctx.on !== 'function') {
-        logger.warn?.('[harden] ctx.on 不可用，规则 H1 与 H2 均未挂上')
-        return
-    }
-
     ctx.on('agent/turn-stopping', async (payloadRaw: unknown): Promise<void> => {
         try {
             const payload = payloadRaw as TurnStoppingPayload | null
@@ -226,9 +215,6 @@ function considerToolFailureSteer(
     const hit = detectSilentToolFailure(快照, 前缀组)
     if (hit === null) return
 
-    const steer = payload.agent.steer
-    if (typeof steer !== 'function') return
-
     const count = takeBudget(state, agent, turn)
 
     logger.info?.(
@@ -238,7 +224,7 @@ function considerToolFailureSteer(
     // client 侧 nudge-row.ts 拆开后再用现成的 t 翻译。
     const summary = `nudge.toolFailure|${count}`
 
-    steer.call(payload.agent, makeNudgeMessage(NUDGE_TEXT, summary))
+    payload.agent.steer(makeNudgeMessage(NUDGE_TEXT, summary))
 }
 
 /**
@@ -260,9 +246,6 @@ function considerEmptyTurnSteer(
     const hit = detectEmptyTurnEnd(快照)
     if (hit === null) return
 
-    const steer = payload.agent.steer
-    if (typeof steer !== 'function') return
-
     const count = takeBudget(state, agent, turn)
 
     logger.info?.(
@@ -271,7 +254,7 @@ function considerEmptyTurnSteer(
     // 只传暗号，理由同上（见 considerToolFailureSteer）。
     const summary = `nudge.emptyTurn|${count}`
 
-    steer.call(payload.agent, makeNudgeMessage(EMPTY_TURN_NUDGE_TEXT, summary))
+    payload.agent.steer(makeNudgeMessage(EMPTY_TURN_NUDGE_TEXT, summary))
 }
 
 /**
@@ -293,11 +276,6 @@ function mountRequestErrorGuard(
     state: HardenState,
     current: () => Required<HardenConfig>,
 ): void {
-    if (typeof ctx.on !== 'function') {
-        logger.warn?.('[harden] ctx.on 不可用，规则 H3 未挂上')
-        return
-    }
-
     ctx.on('agent/request-error', async (payloadRaw: unknown, nextRaw: unknown): Promise<unknown> => {
         const next = nextRaw as () => Promise<RequestErrorAction>
         const officialDecision = await next()
@@ -363,8 +341,8 @@ function considerRetry(
 /**
  * 往会话写一对重试事件，让界面显示「已重试模型请求（n/max）· 1s」。
  *
- * 事件形状与官方 `dsh-llm-retry` 一致（界面认的就是这两条）。写入面是可选的：
- * 测试桩与老版本会话可能没有 `append`，缺失时照常重试，只是界面看不到那行提示。
+ * 事件形状与官方 `dsh-llm-retry` 一致（界面认的就是这两条）。这条写入只为界面提示，
+ * 不参与重试判定。
  *
  * @param payload - `agent/request-error` 载荷。
  * @param retryId - 本 policy chain 的重试 id（由 `takeRetrySlot` 分配，同链复用）。
@@ -377,12 +355,9 @@ function reportRetryToSession(
     retry: number,
     maxRetries: number,
 ): void {
-    const append = payload.agent.session?.append
-    if (typeof append !== 'function') return
-
     const events = buildRetryEvents(payload, retryId, retry, maxRetries)
-    append.call(payload.agent.session, events.scheduledType, events.scheduledData)
-    append.call(payload.agent.session, events.startedType, events.startedData)
+    payload.agent.session.append(events.scheduledType, events.scheduledData)
+    payload.agent.session.append(events.startedType, events.startedData)
 }
 
 /**

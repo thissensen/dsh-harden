@@ -136,7 +136,7 @@ pnpm install
 node scripts/link-deps.mjs    # 把宿主包链进本项目的 node_modules
 pnpm build                     # tsc（host）+ vite（client）
 pnpm typecheck                 # 只做类型检查
-pnpm test                      # vitest，353 例（17 个测试文件）
+pnpm test                      # vitest，351 例（17 个测试文件）
 ```
 
 ## 许可

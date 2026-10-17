@@ -204,6 +204,8 @@ function 挂载聚合规则(初始开关: boolean): 聚合环境 {
         inject: (_依赖组: readonly string[], 回调: (ctx: Ctx) => void) => {
             回调(桩上下文)
         },
+        // 本模块不从 `ctx.get` 取服务，上下文面的这个必填成员补个桩即可。
+        get: () => undefined,
     }
 
     mountSubagentAggregation(桩上下文, 日志, () => ({ ...defaultConfig(), subagentAggregation: 启用 }))

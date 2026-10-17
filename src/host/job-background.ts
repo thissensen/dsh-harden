@@ -394,15 +394,10 @@ export function mountJobBackground(
     logger: Logger,
     isEnabled: () => boolean = () => true,
 ): void {
-    if (typeof ctx.inject !== 'function') {
-        logger.warn?.('[harden] ctx.inject 不可用，job_background 工具未注册')
-        return
-    }
-
     ctx.inject(['shell', 'jobs', 'tools'], (jobCtx: Ctx) => {
-        const shell = jobCtx.get?.<ShellServiceLike>('shell')
-        const jobs = jobCtx.get?.<JobsServiceLike>('jobs')
-        const tools = jobCtx.get?.<ToolRuntimeLike>('tools')
+        const shell = jobCtx.get<ShellServiceLike>('shell')
+        const jobs = jobCtx.get<JobsServiceLike>('jobs')
+        const tools = jobCtx.get<ToolRuntimeLike>('tools')
 
         if (shell === undefined || jobs === undefined || tools === undefined) {
             logger.warn?.(
@@ -416,9 +411,9 @@ export function mountJobBackground(
         const sandboxPolicy =
             defaultMode === undefined
                 ? undefined
-                : jobCtx.get?.<SandboxPolicyResolverLike>('sandboxPolicy')
-        const shellEnv = jobCtx.get?.<ShellEnvServiceLike>('shellEnv')
-        const approver = jobCtx.get?.<Parameters<typeof approveEscalation>[1]['approver']>('approval')
+                : jobCtx.get<SandboxPolicyResolverLike>('sandboxPolicy')
+        const shellEnv = jobCtx.get<ShellEnvServiceLike>('shellEnv')
+        const approver = jobCtx.get<Parameters<typeof approveEscalation>[1]['approver']>('approval')
 
         const definition = defineTool({
             name: TOOL_NAME,
@@ -565,6 +560,6 @@ export function mountJobBackground(
         }
 
         syncRegistration()
-        jobCtx.on?.('settings/document-updated', () => syncRegistration())
+        jobCtx.on('settings/document-updated', () => syncRegistration())
     })
 }

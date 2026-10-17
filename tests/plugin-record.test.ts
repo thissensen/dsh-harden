@@ -2,7 +2,7 @@
  * `plugin:` 记录通道适配层的单元测试。
  *
  * 被测对象是 `src/host/plugin-record.ts`：写入口（落进日志的数据逐字段）、读入口（逐条自验 + 按 seq
- * 增量续接）与通道探测（rc.2 没有那两个函数 ⇒ 静默降级）。
+ * 增量续接）与通道探测（平台模块没导出那两个函数 ⇒ 静默降级）。
  *
  * **只替掉「平台包在哪」那一层**（`session-repair.js` 的 `加载平台包组`）：它读磁盘上的真平台包，
  * 只有装了 DSH 的机器才有、CI 上没有；真包回放归第二批。断言全部落在本适配层的真实行为上——
@@ -39,8 +39,8 @@ vi.mock('../src/host/session-repair.js', async (importOriginal) => {
     }
 })
 
-/** rc.2（桌面端 0.2.0-rc.2）的 `dsh-session` 导出面：没有 `appendPluginRecord` / `pluginRecordOf`。 */
-const 假旧版平台模块 = { Session: class {}, KNOWN_SESSION_EVENT_TYPES: new Set() }
+/** 无记录通道的平台模块导出面：没有 `appendPluginRecord` / `pluginRecordOf`。 */
+const 假无记录通道平台模块 = { Session: class {}, KNOWN_SESSION_EVENT_TYPES: new Set() }
 
 /** 一条拦截记录（与内存账本同形）。 */
 const 样例记录: 拦截记录 = { 回合: 1, 步: 7, 序号: 2, 时间戳: 1750000000000 }
@@ -180,8 +180,8 @@ describe('writeRetryInterceptRecord（写入口）', () => {
         expect(警告组[0]).toContain('记录通道')
     })
 
-    it('rc.2 没有这两个函数时不写、不抛，只 warn 一行', async () => {
-        平台包组桩.当前 = { 'dsh-session': 假旧版平台模块 }
+    it('平台模块没提供这两个函数时不写、不抛、只 warn 一行', async () => {
+        平台包组桩.当前 = { 'dsh-session': 假无记录通道平台模块 }
         const { writeRetryInterceptRecord } = await 加载被测模块()
         const { logger, 警告组 } = 造日志桩()
 
@@ -191,15 +191,17 @@ describe('writeRetryInterceptRecord（写入口）', () => {
         expect(警告组[0]).toContain('记录通道')
     })
 
-    it('探测失败不缓存：rc.2 下每次写都重新探一次', async () => {
-        平台包组桩.当前 = { 'dsh-session': 假旧版平台模块 }
+    it('探测失败也缓存：两次写只加载一次、只 warn 一次', async () => {
+        平台包组桩.当前 = { 'dsh-session': 假无记录通道平台模块 }
         const { writeRetryInterceptRecord } = await 加载被测模块()
         const { 会话 } = 造会话桩([])
+        const { logger, 警告组 } = 造日志桩()
 
-        writeRetryInterceptRecord(会话, 样例记录)
-        writeRetryInterceptRecord(会话, 样例记录)
+        writeRetryInterceptRecord(会话, 样例记录, logger)
+        writeRetryInterceptRecord(会话, 样例记录, logger)
 
-        expect(平台包组桩.加载次数).toBe(2)
+        expect(平台包组桩.加载次数).toBe(1)
+        expect(警告组).toHaveLength(1)
     })
 
     it('写入抛错（平台重入保护）时静默降级，只 warn 一行', async () => {
@@ -245,8 +247,8 @@ describe('readRetryInterceptRecords（读入口）', () => {
         ])
     })
 
-    it('通道不可用（rc.2）时回空数组', async () => {
-        平台包组桩.当前 = { 'dsh-session': 假旧版平台模块 }
+    it('通道不可用（加载不出/没导出那两个函数）时回空数组', async () => {
+        平台包组桩.当前 = { 'dsh-session': 假无记录通道平台模块 }
         const { readRetryInterceptRecords } = await 加载被测模块()
         const { 会话 } = 造会话桩([造记录事件({ seq: 0 })])
 

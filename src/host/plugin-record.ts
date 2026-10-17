@@ -2,13 +2,12 @@
  * `plugin:` 记录通道适配层 —— 把模块七「重试链修正」的拦截记录写进会话日志，并从日志读回。
  *
  * **为什么落日志**：内存账本（`retry-intercept.ts` 的记录存储）随进程生灭，重启后界面就不记得哪几处被
- * 改写。平台的 `plugin:` 记录通道（0.2.1-alpha.5 新增）给了插件一个自有的持久位置：记录带
- * `ignorable` 标记，读者不认识的类型一律**保留并跳过**，V3→V4 迁移还会把未知的 `ignorable` 事件收进
- * `plugin:` 命名空间，rc.2 读含记录的会话也安全（已实测）。
+ * 改写。平台的 `plugin:` 记录通道给了插件一个自有的持久位置：记录带 `ignorable` 标记，读者不认识的类型
+ * 一律**保留并跳过**，V3→V4 迁移还会把未知的 `ignorable` 事件收进 `plugin:` 命名空间。
  *
  * **通道在无承诺面上**（`.harness/05-坑册.md` 坑 35）：官方注释限定「仅 `packages/experimental` 的生产
- * 代码可调用」，桌面端 0.2.0-rc.2 根本没有 `appendPluginRecord` / `pluginRecordOf`。所以本模块的所有失败
- * 一律静默降级：写失败只 warn 一行、读失败回空数组，绝不影响看护层的主职责。
+ * 代码可调用」。所以本模块的所有失败一律静默降级：写失败只 warn 一行、读失败回空数组，绝不影响看护层的
+ * 主职责。
  *
  * **一份记录，两个落点**：日志是持久源、内存账本是降级源，两个源在只读端点（第二批）合并。本模块只管
  * 「写进日志 / 从日志读回」，不改记录语义——形状与归属由 `retry-intercept.ts` 定义。读回有两条路径：
@@ -69,7 +68,7 @@ interface 会话读取缓存 {
 
 /**
  * 探测结果：`undefined` = 还没探过，`null` = 这条通道在本进程不可用。
- * **只缓存成功**——失败（rc.2、加载不出来）下次调用仍会重探，见 `探测记录通道`。
+ * **探测一次定型，成败都缓存**——同步 require 的加载结果是确定的，插件热重载会重建本模块、缓存自然清空。
  */
 let 记录通道探测结果: 平台记录通道 | null | undefined
 
@@ -77,12 +76,18 @@ let 记录通道探测结果: 平台记录通道 | null | undefined
 const 记录读取缓存组 = new WeakMap<object, 会话读取缓存>()
 
 /**
+ * 通道缺席是否已经警告过——整个进程只 warn 一次。
+ * 状态挂在写入口而不是探测函数：读入口（`readRetryInterceptRecords`）也会探测、却没有日志出口，
+ * 警告若跟着探测走，读先触发就再也没人告警。
+ */
+let 是否已警告通道缺席 = false
+
+/**
  * 把一条拦截记录写进会话日志。
  *
  * 供模块七在**原 `append` 返回之后**调用：平台的 append 发布过程中再调 `appendPluginRecord` 会抛重入错误
  * （`session append cannot reenter while another append is being published`）。
- * 通道不可用、定位失败、写入抛错……所有失败都只 warn 一行：记录落不进日志时内存账本照旧持有它，
- * 界面提示不受影响。
+ * 通道不可用只 warn 一次、写入抛错只 warn 一行：记录落不进日志时内存账本照旧持有它，界面提示不受影响。
  *
  * @param 会话 - 记录落在哪个会话上。
  * @param 记录 - 一条拦截记录（与内存账本同形的字段）。
@@ -91,7 +96,11 @@ const 记录读取缓存组 = new WeakMap<object, 会话读取缓存>()
 export function writeRetryInterceptRecord(会话: SessionLike, 记录: 拦截记录, logger?: Logger): void {
     const 记录通道 = 探测记录通道()
     if (记录通道 === null) {
-        logger?.warn?.('[harden] 本进程没有 plugin: 记录通道（rc.2 或平台包加载失败），本次拦截记录未落日志')
+        if (是否已警告通道缺席 === false) {
+            logger?.warn?.('[harden] 本进程没有 plugin: 记录通道（平台包加载失败或没导出那两个函数），本次拦截记录未落日志')
+            是否已警告通道缺席 = true
+        }
+
         return
     }
 
@@ -116,8 +125,8 @@ export function writeRetryInterceptRecord(会话: SessionLike, 记录: 拦截记
  * 按会话对象缓存：首次读全量事件，之后按 `snapshotEvents(fromSeq)` 从上次的最大 seq 增量续接——
  * `snapshotEvents` 平台已标 deprecated「新调用禁止」，本项目定稿**不迁移、先记录**（见
  * `.harness/05-坑册.md` 坑 26），读法与 `step-reader.ts` 同源。
- * 逐条自验（记录标记 + 记录名 + data 形状），不合形状就跳过这一条；通道不可用（rc.2 / 加载失败）、
- * 会话对象或事件面缺失、读事件抛错，一律回空数组——只读端点不能因为日志读不动而失败。
+ * 逐条自验（记录标记 + 记录名 + data 形状），不合形状就跳过这一条；通道不可用（加载失败 / 没导出那两个
+ * 函数）、会话对象或事件面缺失、读事件抛错，一律回空数组——只读端点不能因为日志读不动而失败。
  *
  * @param 会话 - 要读的会话；不存在时（端点按会话 id 解析未命中）回空数组。
  * @returns 该会话日志里的拦截记录组；返回的是副本，调用方改不动缓存。
@@ -125,7 +134,7 @@ export function writeRetryInterceptRecord(会话: SessionLike, 记录: 拦截记
 export function readRetryInterceptRecords(会话: SessionLike): 拦截记录[] {
     if (会话 === null || typeof 会话 !== 'object') return []
 
-    // 通道不可用时读写一视同仁地当没有这条通道：rc.2 下记录本就不可能是它写出来的。
+    // 通道不可用时读写一视同仁地当没有这条通道：日志里的记录只可能由它写出来，读也读不到。
     if (探测记录通道() === null) return []
 
     let 缓存 = 记录读取缓存组.get(会话)
@@ -186,8 +195,8 @@ export async function 读会话记录(会话查询: 会话查询面, 会话ID: s
  * 探测本进程可用的平台记录通道。
  *
  * 判定：模块上 `appendPluginRecord` 与 `pluginRecordOf` **都是 function** 才启用——这两个函数是这条通道的
- * 读写面，缺任一说明本进程的平台版本没有它（桌面端 0.2.0-rc.2 两个都没有，已实测）。
- * **只缓存成功**：不可用（rc.2、加载失败）时不留缓存，下次调用重新探测。
+ * 读写面，缺任一说明本进程的平台模块没有它。
+ * **探测一次定型**：成败都写进缓存，之后的调用直接取用；同步 require 的加载结果不会变。
  */
 function 探测记录通道(): 平台记录通道 | null {
     if (记录通道探测结果 !== undefined) return 记录通道探测结果
@@ -199,14 +208,14 @@ function 探测记录通道(): 平台记录通道 | null {
             候选模块 !== undefined &&
             typeof 候选模块.appendPluginRecord === 'function' &&
             typeof 候选模块.pluginRecordOf === 'function'
-        if (有记录通道读写面) 记录通道探测结果 = 候选模块
+        记录通道探测结果 = 有记录通道读写面 ? 候选模块 : null
 
     } catch {
-        // 定位/加载失败（本机没有平台包、目录派生不出来）：静默降级，且**不留缓存**，下次调用重新探。
-        return null
+        // 定位/加载失败（本机没有平台包、目录派生不出来）：静默降级，结果同样定型，不再重探。
+        记录通道探测结果 = null
     }
 
-    return 记录通道探测结果 ?? null
+    return 记录通道探测结果
 }
 
 /**

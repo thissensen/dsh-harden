@@ -99,7 +99,7 @@ interface AggregationState {
  * 挂载规则「子代理通知聚合」。
  *
  * 用 `ctx.inject(['agents'], cb)` 取 agent 注册表（判「父名下还有没有别的活跃子代理」要它）；
- * 服务缺席就如实降级（打警告、不挂监听器）。
+ * agents 这个可选服务缺席就如实降级（打警告、不挂监听器）。
  *
  * @param ctx - cordis 上下文。
  * @param logger - 日志出口。
@@ -110,19 +110,10 @@ export function mountSubagentAggregation(
     logger: Logger,
     current: () => Required<HardenConfig>,
 ): void {
-    if (typeof ctx.inject !== 'function') {
-        logger.warn?.('[harden] ctx.inject 不可用，规则「子代理通知聚合」未挂上')
-        return
-    }
-
     ctx.inject(['agents'], (svcCtx: Ctx) => {
         const agents = svcCtx.agents
         if (agents === undefined) {
             logger.warn?.('[harden] agents 服务不可用，规则「子代理通知聚合」未挂上')
-            return
-        }
-        if (typeof svcCtx.on !== 'function') {
-            logger.warn?.('[harden] ctx.on 不可用，规则「子代理通知聚合」未挂上')
             return
         }
 

@@ -33,7 +33,6 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-locale"
       ],
@@ -41,7 +40,7 @@
     }
   },
   "engines": {
-    "dsh": ">=0.1.7-rc.1"
+    "dsh": ">=0.2.1-rc.2"
   },
   "files": [
     "lib",
@@ -59,15 +58,15 @@
     "test": "vitest run"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.0.4 || ~4.0.5-0",
-    "@deepseek-ai/dsh-agent": ">=0.1.7-rc.1",
-    "@deepseek-ai/dsh-compaction": ">=0.1.7-rc.1",
-    "@deepseek-ai/dsh-jobs": ">=0.1.7-rc.1",
-    "@deepseek-ai/dsh-llm": ">=0.1.7-rc.1",
-    "@deepseek-ai/dsh-sandbox": ">=0.1.7-rc.1",
-    "@deepseek-ai/dsh-settings": ">=0.1.7-rc.1",
-    "@deepseek-ai/dsh-shell": ">=0.1.7-rc.1",
-    "@deepseek-ai/dsh-tools": ">=0.1.7-rc.1",
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-agent": ">=0.2.1-rc.2",
+    "@deepseek-ai/dsh-compaction": ">=0.2.1-rc.2",
+    "@deepseek-ai/dsh-jobs": ">=0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": ">=0.2.1-rc.2",
+    "@deepseek-ai/dsh-sandbox": ">=0.2.1-rc.2",
+    "@deepseek-ai/dsh-settings": ">=0.2.1-rc.2",
+    "@deepseek-ai/dsh-shell": ">=0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.2",
     "@deepseek-ai/schemastery": "*"
   },
   "devDependencies": {

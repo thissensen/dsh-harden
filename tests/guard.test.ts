@@ -24,9 +24,9 @@ import { readTurnSnapshot } from '../src/host/step-reader.js'
 const TURN = 3
 const LAST_STEP = 4
 
-/** 构造只提供 `snapshotEvents()` 的会话桩。 */
+/** 构造只提供 `snapshotEvents()` 的会话桩（`append` 是会话面的必填成员，这里不会被调用）。 */
 function makeSession(events: readonly SessionEventLike[]): SessionLike {
-    return { snapshotEvents: () => events }
+    return { snapshotEvents: () => events, append: () => undefined }
 }
 
 /** 构造一条 `assistant/message` 事件。 */
@@ -136,6 +136,7 @@ describe('detectSilentToolFailure', () => {
                 snapshotEvents: () => {
                     throw new Error('会话日志读取失败')
                 },
+                append: () => undefined,
             }
             const snapshot = readTurnSnapshot(session, TURN)
 
@@ -213,6 +214,7 @@ describe('detectEmptyTurnEnd', () => {
             snapshotEvents: () => {
                 throw new Error('会话日志读取失败')
             },
+            append: () => undefined,
         }
 
         expect(detectEmptyTurnEnd(readTurnSnapshot(session, TURN))).toBeNull()
@@ -344,6 +346,7 @@ describe('readTurnSnapshot', () => {
             snapshotEvents: () => {
                 throw new Error('会话日志读取失败')
             },
+            append: () => undefined,
         }
 
         expect(readTurnSnapshot(session, TURN)).toBeNull()

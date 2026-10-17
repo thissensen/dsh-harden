@@ -132,11 +132,6 @@ export function mountContextCompaction(
     logger: Logger,
     current: () => Required<HardenConfig>,
 ): void {
-    if (typeof ctx.inject !== 'function') {
-        logger.warn?.('[harden] ctx.inject 不可用，规则「上下文自动压缩」未挂上')
-        return
-    }
-
     ctx.inject(['llm', 'tokenMeter'], (svcCtx: Ctx) => {
         const llm = svcCtx.llm
         const tokenMeter = svcCtx.tokenMeter
@@ -144,11 +139,6 @@ export function mountContextCompaction(
             logger.warn?.('[harden] llm/tokenMeter 不可用，规则「上下文自动压缩」未挂上')
             return
         }
-        if (typeof svcCtx.on !== 'function') {
-            logger.warn?.('[harden] ctx.on 不可用，规则「上下文自动压缩」未挂上')
-            return
-        }
-
         svcCtx.on('agent/pre-step', async (payloadRaw: unknown, nextRaw: unknown): Promise<unknown> => {
             const next = nextRaw as () => Promise<unknown>
             const decision = await next()
@@ -326,17 +316,14 @@ function selectCompactableRange(
  */
 async function runCompactionTransaction(deps: TransactionDeps): Promise<void> {
     const { session, range, tokenMeter, llm, logger } = deps
-    if (typeof session.append !== 'function') return
-
-    const append = session.append
     const compactionId = CompactionId(randomUUID())
     const turn = deps.turn
 
-    const startEvent = append.call(session, 'compaction/start', { compactionId, turn }) as { seq: number } | undefined
+    const startEvent = session.append('compaction/start', { compactionId, turn }) as { seq: number } | undefined
     const startSeq = startEvent === undefined ? undefined : startEvent.seq
     if (typeof startSeq !== 'number') {
         // start 已经落库（持有锁）；拿不到 seq 就必须补一条 end 释放锁，否则会话永久锁死。
-        append.call(session, 'compaction/end', {
+        session.append('compaction/end', {
             compactionId,
             turn,
             error: 'compaction: start event seq unavailable',
@@ -364,7 +351,7 @@ async function runCompactionTransaction(deps: TransactionDeps): Promise<void> {
             throw new Error('compaction: framed summary is not smaller than the shadowed range')
         }
 
-        const summaryEvent = append.call(session, 'compaction/summary', {
+        const summaryEvent = session.append('compaction/summary', {
             compactionId,
             summary: summarized.summary,
             rawOutput: summarized.rawOutput,
@@ -383,17 +370,17 @@ async function runCompactionTransaction(deps: TransactionDeps): Promise<void> {
         }
 
         // ② ③ 必须相邻：summary 与替换 user/message 之间不许插任何东西。
-        append.call(session, 'user/message', checkpointMessage, {
+        session.append('user/message', checkpointMessage, {
             surfaceOp: { op: 'replace', startSeq: range.start, endSeq: range.end },
             sourceEventSeqs: [startSeq, summarySeq, ...range.shadowedSeqs],
         })
 
-        append.call(session, 'compaction/end', { compactionId, turn })
+        session.append('compaction/end', { compactionId, turn })
         logger.info?.(`[harden] 规则「上下文自动压缩」完成：compactionId=${compactionId}`)
 
     } catch (error) {
         try {
-            append.call(session, 'compaction/end', { compactionId, turn, error: String(error) })
+            session.append('compaction/end', { compactionId, turn, error: String(error) })
 
         } catch (closeError) {
             logger.warn?.('[harden] 压缩失败后写 compaction/end 也失败', closeError)

@@ -1,10 +1,9 @@
 /**
  * dsh-harden —— 项目内共享类型。
  *
- * 平台类型声明从 0.1.7 起随包发布，但本项目**不直接 import 它们的类型**（会把插件与
- * 平台包的类型入口绑死，link 装法下路径未必一致，与 dsh-agent-studio 同纪律）。
- * 这里只声明本项目实际用到的成员，写之前一律去
- * `<DSH 安装目录>/node_modules/@deepseek-ai/` 的源码核实。
+ * 本项目**不直接 import 平台包的类型**（会把插件与平台包的类型入口绑死，
+ * link 装法下路径未必一致，与 dsh-agent-studio 同纪律）。这里只声明本项目实际用到的成员，
+ * 写之前一律去 `<DSH 安装目录>/node_modules/@deepseek-ai/` 的源码核实。
  *
  * @module dsh-harden/host-types
  */
@@ -56,14 +55,16 @@ export interface SettingsService {
     update(namespace: string, patch: object): void
 }
 
-/** cordis 上下文里本插件用到的部分。 */
+/**
+ * cordis 上下文里本插件用到的部分。
+ *
+ * `on` / `inject` / `get` 是 cordis 上下文必供的成员；其余服务可能缺席，缺席时如实降级。
+ */
 export interface Ctx {
     readonly logger?: Logger
-    on?(event: string, listener: (...args: unknown[]) => unknown, options?: { prepend?: boolean }): void
-    inject?(deps: readonly string[], callback: (ctx: Ctx) => void): void
-    get?<T = unknown>(name: string): T | undefined
-    /** 登记随插件生命周期回收的副作用。 */
-    effect?(callback: () => void | (() => void)): void
+    on(event: string, listener: (...args: unknown[]) => unknown, options?: { prepend?: boolean }): void
+    inject(deps: readonly string[], callback: (ctx: Ctx) => void): void
+    get<T = unknown>(name: string): T | undefined
     readonly settings?: SettingsService
     readonly webServer?: WebServerService
     /** 平台 token 计量服务（压缩判定阈值用）。 */
@@ -158,13 +159,8 @@ export interface SessionLike {
      * `plugin-record.ts` 按 `fromSeq` 增量续读记录，`step-reader.ts` 仍按无参全量读。
      */
     snapshotEvents(fromSeq?: number): readonly SessionEventLike[]
-    /**
-     * 追加一条会话事件（规则 H3 写重试事件用）。
-     *
-     * 可选：平台的 `Session` 一定实现它，但测试桩只关心读取面、不必造写入面；
-     * 缺失时 H3 照常重试，只是界面看不到那一行提示。
-     */
-    append?(type: string, data: unknown, opts?: unknown): { seq: number } | void
+    /** 追加一条会话事件（规则 H3 写重试事件用）。平台 `Session` 必供。 */
+    append(type: string, data: unknown, opts?: unknown): { seq: number } | void
     /** 当前会话表面的节点 seq 清单（压缩判定与区间选择用）。 */
     readonly surface?: { readonly nodes: readonly number[]; readonly replaceGeneration?: number }
     /** 按 seq 取一条会话事件（压缩的摘要调用要复用它派生消息）。 */
@@ -193,8 +189,8 @@ export interface SessionLike {
 /** Agent 里本项目用到的面。 */
 export interface AgentLike {
     readonly session: SessionLike
-    /** 投递一条引导消息；回合收尾边界上用它把回合掰回再走一步。 */
-    steer?(message: unknown): void
+    /** 投递一条引导消息；回合收尾边界上用它把回合掰回再走一步。平台 `Agent` 必供。 */
+    steer(message: unknown): void
     /** agent 的选项；压缩的摘要调用用它做 provider/model 的兜底来源。 */
     readonly options?: { readonly provider?: string; readonly model?: string }
 }

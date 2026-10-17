@@ -131,8 +131,8 @@ export function 获取拦截记录(会话ID: string): 拦截记录[] {
  *   结果按 `冷读缓存时限` 缓存，见 `取冷读记录`。
  *
  * 两个源各自可能为空：记录落进日志之后进程重启，内存账本是空的、日志里那条还在；会话对象不在注册表里
- * 又拿不到会话查询（桌面端 asar 0.2.0-rc.2 没有该服务）时读不到日志，只回内存账本——与只读端点从前的
- * 行为一致。日志只增不改（重启后重读到的老记录也在），按时间戳升序排完只回最近 `每会话记录上限` 条。
+ * 又拿不到会话查询（该服务不可用）时读不到日志，只回内存账本——与只读端点从前的行为一致。
+ * 日志只增不改（重启后重读到的老记录也在），按时间戳升序排完只回最近 `每会话记录上限` 条。
  *
  * @param 会话ID - 会话 id。
  * @param 会话查询 - 平台的会话查询服务；拿不到时（服务缺失）只走内存账本与会话对象两条源。
@@ -201,8 +201,7 @@ interface 拦截会话 {
     /**
      * 追加一条会话事件。
      *
-     * 平台的 `Session` 一定有；测试桩与老版本会话可能没有（见 `types.ts` 的同款说明），
-     * 缺失时本模块不装拦截器、什么都不做。
+     * 会话来自平台载荷、拿到手是 `unknown`，形状按需收窄：`append` 不是函数的会话不装拦截器、什么都不做。
      */
     append(type: string, data: unknown, opts?: unknown): unknown
     /** 会话头；`header.id` 是平台公开读面上的会话 id。 */
@@ -223,11 +222,6 @@ interface 会话载荷 {
  * @param logger - 日志出口。
  */
 export function mountRetryIntercept(ctx: Ctx, logger: Logger): void {
-    if (typeof ctx.on !== 'function') {
-        logger.warn?.('[harden] ctx.on 不可用，重试链写入拦截器未挂上')
-        return
-    }
-
     // 主安装点（serial）：agent 进入注册表、平台放行排队输入之前。
     ctx.on('agent/created', (payloadRaw: unknown): void => {
         尽力安装拦截器(payloadRaw, logger)
@@ -256,6 +250,7 @@ function 尽力安装拦截器(payloadRaw: unknown, logger: Logger): void {
         const 载荷 = payloadRaw as 会话载荷 | null
         const 会话 = 载荷?.agent?.session
         if (会话 === null || typeof 会话 !== 'object') return
+        // 载荷来自平台、按需收窄形状：认不出写入口就别装（装了第一次写入就会崩）。
         if (typeof (会话 as { append?: unknown }).append !== 'function') return
         if (已装会话组.has(会话)) return
 

@@ -116,6 +116,7 @@ function 造宿主(是否启用: () => boolean): 假宿主 {
 
     const 服务表: Record<string, unknown> = { shell: 假shell, jobs: 假jobs, tools: 假tools }
 
+    // 外层与内层两个假上下文共用同一套服务取用、监听记录和注入回调。
     const 工具上下文: Ctx = {
         get<T>(name: string): T | undefined {
             return 服务表[name] as T | undefined
@@ -123,19 +124,14 @@ function 造宿主(是否启用: () => boolean): 假宿主 {
         on(event: string, listener: () => void): void {
             监听组.set(event, listener)
         },
-    }
-
-    const 日志: Logger = { info() {}, warn() {}, error() {} }
-    const 上下文: Ctx = {
-        logger: 日志,
         inject(依赖组: readonly string[], callback: (ctx: Ctx) => void): void {
             依赖记录组.push(依赖组)
             callback(工具上下文)
         },
-        get(): undefined {
-            return undefined
-        },
     }
+
+    const 日志: Logger = { info() {}, warn() {}, error() {} }
+    const 上下文: Ctx = { logger: 日志, ...工具上下文 }
 
     mountJobBackground(上下文, 日志, 是否启用)
 

@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { shouldCompactSession } from '../src/host/compaction.js'
-import type { CompactionScope, HardenConfig } from '../src/host/types.js'
+import type { CompactionScope, HardenConfig, SessionLike } from '../src/host/types.js'
 
 /** 造一份判压缩用的配置（只放本判定读的两个字段）。 */
 function 造配置(contextCompaction: boolean, compactionScope: CompactionScope): Required<HardenConfig> {
@@ -30,39 +30,48 @@ function 造配置(contextCompaction: boolean, compactionScope: CompactionScope)
     }
 }
 
+/** 造一个判定用的会话：判定只读会话头，其余字段按必填形状补齐（本用例不触达）。 */
+function 造会话(会话头?: { readonly origin?: string }): SessionLike {
+    return {
+        snapshotEvents: () => [],
+        append: () => undefined,
+        ...(会话头 === undefined ? {} : { header: 会话头 }),
+    }
+}
+
 describe('shouldCompactSession（总开关与压缩范围）', () => {
     it('总开关关：任何范围下主代理与子代理都不压', () => {
         for (const 范围 of ['all', 'main', 'subagent'] as const) {
             const 配置 = 造配置(false, 范围)
 
-            expect(shouldCompactSession(配置, { snapshotEvents: () => [] })).toBe(false)
-            expect(shouldCompactSession(配置, { snapshotEvents: () => [], header: { origin: 'subagent' } })).toBe(false)
+            expect(shouldCompactSession(配置, 造会话())).toBe(false)
+            expect(shouldCompactSession(配置, 造会话({ origin: 'subagent' }))).toBe(false)
         }
     })
 
     it('范围 all：主代理与子代理都压', () => {
         const 配置 = 造配置(true, 'all')
 
-        expect(shouldCompactSession(配置, { snapshotEvents: () => [] })).toBe(true)
-        expect(shouldCompactSession(配置, { snapshotEvents: () => [], header: { origin: 'subagent' } })).toBe(true)
+        expect(shouldCompactSession(配置, 造会话())).toBe(true)
+        expect(shouldCompactSession(配置, 造会话({ origin: 'subagent' }))).toBe(true)
     })
 
     it('范围 main：只压主代理，子代理保持原样', () => {
         const 配置 = 造配置(true, 'main')
 
-        expect(shouldCompactSession(配置, { snapshotEvents: () => [] })).toBe(true)
-        expect(shouldCompactSession(配置, { snapshotEvents: () => [], header: { origin: 'subagent' } })).toBe(false)
+        expect(shouldCompactSession(配置, 造会话())).toBe(true)
+        expect(shouldCompactSession(配置, 造会话({ origin: 'subagent' }))).toBe(false)
     })
 
     it('范围 subagent：只压子代理，主代理保持原样', () => {
         const 配置 = 造配置(true, 'subagent')
 
-        expect(shouldCompactSession(配置, { snapshotEvents: () => [] })).toBe(false)
-        expect(shouldCompactSession(配置, { snapshotEvents: () => [], header: { origin: 'subagent' } })).toBe(true)
+        expect(shouldCompactSession(配置, 造会话())).toBe(false)
+        expect(shouldCompactSession(配置, 造会话({ origin: 'subagent' }))).toBe(true)
     })
 
     it('会话头没有 origin（主代理）时按主代理算', () => {
-        expect(shouldCompactSession(造配置(true, 'main'), { snapshotEvents: () => [], header: {} })).toBe(true)
-        expect(shouldCompactSession(造配置(true, 'subagent'), { snapshotEvents: () => [], header: {} })).toBe(false)
+        expect(shouldCompactSession(造配置(true, 'main'), 造会话({}))).toBe(true)
+        expect(shouldCompactSession(造配置(true, 'subagent'), 造会话({}))).toBe(false)
     })
 })
