@@ -102,6 +102,7 @@ export const zh = {
     'api.networkRetryTokensInvalid': 'networkRetryTokens 必须是不超过 200 字的字符串',
     'api.toolFailurePrefixesInvalid': 'toolFailurePrefixes 必须是不超过 2000 字的字符串',
     'api.backgroundJobToolNotBoolean': 'backgroundJobTool 必须是布尔值',
+    'api.ptcBreakLimitNotBoolean': 'ptcBreakLimit 必须是布尔值',
     'api.subagentAggregationNotBoolean': 'subagentAggregation 必须是布尔值',
     'api.contextCompactionNotBoolean': 'contextCompaction 必须是布尔值',
     'api.compactionScopeInvalid': 'compactionScope 必须是 all、main 或 subagent',
@@ -113,6 +114,11 @@ export const zh = {
     'rule.backgroundJobTool.desc': '创建工具对接 pwsh，让模型能把长命令丢到后台跑，不占住当前回合',
     'rule.backgroundJobTool.help':
         '开启后，模型可以用 job_background 工具起后台命令，再用 job_list / job_output / job_kill 查看和停止。关闭后该工具从工具表里消失。',
+
+    'rule.ptcBreakLimit.title': '突破 PTC 120 秒限制',
+    'rule.ptcBreakLimit.desc': '把 PTC 模式 run_code 程序的默认预算从 120 秒抬到平台计时器上限（约 24.8 天）',
+    'rule.ptcBreakLimit.help':
+        '只对 PTC 模式生效：把 PTC 模式 run_code 程序的默认程序预算，从平台默认的 120 秒抬到计时器上限 2147483647 毫秒（约 24.8 天）。改动是进程级的，主代理与子代理都生效；程序里等后台 job、等嵌套工具的时间也计入这份预算。关掉立即恢复平台默认的 120 秒，插件卸载时自动还原。默认关闭：预算这么大，写坏的程序不会自己到点结束。',
 
     'rule.subagentAggregation.title': '子代理通知聚合',
     'rule.subagentAggregation.desc': '多个子代理并行结束时，压住中间的结算通知，全部结束后合并成一条统一送达，不再逐个唤醒',
@@ -237,6 +243,7 @@ export const en: Record<CopyKey, string> = {
     'api.networkRetryTokensInvalid': 'networkRetryTokens must be a string of at most 200 characters',
     'api.toolFailurePrefixesInvalid': 'toolFailurePrefixes must be a string of at most 2000 characters',
     'api.backgroundJobToolNotBoolean': 'backgroundJobTool must be a boolean',
+    'api.ptcBreakLimitNotBoolean': 'ptcBreakLimit must be a boolean',
     'api.subagentAggregationNotBoolean': 'subagentAggregation must be a boolean',
     'api.contextCompactionNotBoolean': 'contextCompaction must be a boolean',
     'api.compactionScopeInvalid': 'compactionScope must be one of all, main, subagent',
@@ -248,6 +255,11 @@ export const en: Record<CopyKey, string> = {
     'rule.backgroundJobTool.desc': 'Creates a tool wired to pwsh, letting the model run long commands in the background without blocking the turn',
     'rule.backgroundJobTool.help':
         'When on, the model can start background commands with the job_background tool and manage them with job_list / job_output / job_kill. When off, the tool disappears from the tool list.',
+
+    'rule.ptcBreakLimit.title': 'Lift the PTC 120-second cap',
+    'rule.ptcBreakLimit.desc': 'Raises the default budget of PTC-mode run_code programs from 120 seconds to the platform timer ceiling (about 24.8 days)',
+    'rule.ptcBreakLimit.help':
+        'PTC mode only: raises the default program budget of PTC-mode run_code programs from the platform default of 120 seconds to the timer ceiling of 2147483647 ms (about 24.8 days). The change is process-wide, so the main agent and subagents both get it; time a program spends waiting for background jobs or nested tools counts against that budget too. Turning it off restores the platform default of 120 seconds immediately, and uninstalling the plugin restores it as well. Off by default: with a budget this large, a broken program never hits its deadline.',
 
     'rule.subagentAggregation.title': 'Aggregate subagent notices',
     'rule.subagentAggregation.desc': 'When several subagents finish in parallel, their notices are held back and delivered together as one message once every subagent is done, instead of waking the model one by one',

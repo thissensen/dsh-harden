@@ -48,6 +48,8 @@ export interface HardenConfig {
     compactionInstruction?: string
     /** 规则「子代理通知聚合」的开关。默认 false。 */
     subagentAggregation?: boolean
+    /** 规则「突破 PTC 120 秒限制」的开关。默认 false（见 config.ts 的 DEFAULT_PTC_BREAK_LIMIT）。 */
+    ptcBreakLimit?: boolean
 }
 
 /** settings 服务里本插件用到的部分。 */
@@ -58,12 +60,20 @@ export interface SettingsService {
 /**
  * cordis 上下文里本插件用到的部分。
  *
- * `on` / `inject` / `get` 是 cordis 上下文必供的成员；其余服务可能缺席，缺席时如实降级。
+ * `on` / `inject` / `effect` / `get` 是 cordis 上下文必供的成员；其余服务可能缺席，缺席时如实降级。
  */
 export interface Ctx {
     readonly logger?: Logger
     on(event: string, listener: (...args: unknown[]) => unknown, options?: { prepend?: boolean }): void
     inject(deps: readonly string[], callback: (ctx: Ctx) => void): void
+    /**
+     * 注册一个随插件卸载自动执行的副作用。
+     *
+     * 只声明本项目用到的形态（`execute` 返回**同步** disposer）。cordis 4.0.5 的真实签名是
+     * `effect(execute: () => Effect, label?: string): Disposable<Promise<void>>`；返回值本项目
+     * 不承接，声明成 `unknown`，免得在这里凭空造一个平台类型。
+     */
+    effect(execute: () => () => void, label?: string): unknown
     get<T = unknown>(name: string): T | undefined
     readonly settings?: SettingsService
     readonly webServer?: WebServerService
@@ -73,6 +83,8 @@ export interface Ctx {
     readonly llm?: LlmService
     /** 平台 agent 注册表服务（子代理通知聚合判「还有没有别的活跃子代理」用）。 */
     readonly agents?: AgentRegistryService
+    /** PTC 运行时服务（服务名 `ptcRuntime`）；没装 PTC 的 profile 里缺席。 */
+    readonly ptcRuntime?: PtcRuntimeService
 }
 
 export interface Logger {
@@ -115,6 +127,21 @@ export interface LlmService {
 export interface RequestHeaderLike {
     readonly config?: { readonly provider?: string; readonly model?: string; readonly maxTokens?: number }
     readonly tools?: unknown
+}
+
+/** PTC 运行时的预算面（只声明本项目要读写的两个数字）。 */
+export interface PtcBudgetConfigLike {
+    timeoutMs: number
+    maxTimeoutMs: number
+}
+
+/** 平台 PTC 运行时服务（`ctx.ptcRuntime`）里本项目用到的面。 */
+export interface PtcRuntimeService {
+    /**
+     * 运行时的生效配置。平台没有公开写入口（validateConfig 只在构造时跑一次），
+     * 本插件直接改这两个数字抬高预算，见 .harness/05-坑册.md。
+     */
+    readonly config?: PtcBudgetConfigLike
 }
 
 // ── 平台会话与消息（只声明本插件读到的形状）───────────────────────────────

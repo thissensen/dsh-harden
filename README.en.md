@@ -16,7 +16,7 @@
   <a href="https://github.com/thissensen/dsh-harden">GitHub</a>
 </p>
 
-> **Status**: guard rules H1, H2 and H3 are all implemented; **all 351 tests pass (17 test files)**, typecheck is clean, and the build succeeds.
+> **Status**: guard rules H1, H2 and H3 are all implemented; **all 368 tests pass (18 test files)**, typecheck is clean, and the build succeeds.
 
 ## What it solves
 
@@ -44,6 +44,7 @@ In one sentence: **an explicit failure is fine; a silent stop is not.**
 - **One-click repair of corrupted session logs** — when a session log gets corrupted and the platform refuses to open the history, the settings page scans and repairs it in one click.
 - **Automatic context compaction** — once the conversation grows past a threshold, the older history is condensed into a summary; the UI reuses the platform's own notice.
 - **Aggregate subagent notices** — when several subagents finish in parallel, their completion notices are held back and delivered together as one message once every subagent is done, instead of waking the model one by one. Off by default.
+- **Lift the PTC program budget** — a settings toggle raises the default program budget of PTC-mode `run_code` programs from the platform's 120 seconds to the timer ceiling (about 24.8 days); turning it off or unloading the plugin restores the default. It applies to the main agent and subagents alike. **Off by default**: with a budget that large, a runaway program will not stop by itself.
 - **Automatic repair for broken subagent sessions** — fixes the case where a session suddenly refuses to open while subagents are running. The plugin corrects non-conforming retry events before they are stored; a light note appears at the end of the turn when a correction happens. Corrections are also recorded in the session log, so the note **still shows after a restart**. It is **always on and has no toggle**.
 
 ## Problem screenshots
@@ -124,7 +125,7 @@ dsh plugin --profile web add link:<absolute path to this repo>
 
 ## Settings
 
-The settings page lives under the "DSH Optimize" section and has **eight** cards:
+The settings page lives under the "DSH Optimize" section and has **nine** cards:
 
 | Card | Description |
 |---|---|
@@ -133,6 +134,7 @@ The settings page lives under the "DSH Optimize" section and has **eight** cards
 | **Continue after a network interruption** | Toggle plus **Network retry count** (0–99 extra attempts after the official retries run out; 0 disables it) and **Failures that trigger a retry** (failure codes `SERVER` / `RATE_LIMIT` / `TIMEOUT` / `TRANSPORT` and HTTP statuses `502` / `429`; empty retries nothing). |
 | **Automatic context compaction** | Toggle plus **Compaction scope** (a dropdown: All / Main only / Subagents only — default All), **Trigger threshold** (e.g. `200K` / `1M` / `100000`; the plugin default is `200K`) and **Summary instruction** (the instruction sent to the model when a summary is generated). Once the session exceeds the threshold, an earlier stretch of history is condensed into a summary and the platform's own "context compacted" notice is shown. |
 | **Background task tool** | Toggle. When on, the model can start background commands with `job_background` and manage them with `job_list` / `job_output` / `job_kill`. When off, the tool disappears. |
+| **Lift the PTC 120-second cap** | Toggle, **off by default**. When on, it raises the default program budget of PTC-mode `run_code` programs from 120 seconds to the platform timer ceiling (2147483647 ms, about 24.8 days), and it applies to both the main agent and subagents; turning it off or unloading the plugin restores the platform default. It touches this one budget only: the 600-second foreground cap of `gitbash` and the 600-second single-wait cap of `job_output` stay as they are. **With a budget this large there is no automatic backstop** — a runaway program will hardly ever stop by itself, so you have to stop it manually; it is not a security boundary either (editing the profile, another plugin, or an outside process can all bypass it). |
 | **Aggregate subagent notices** | Toggle, **off by default**. When several subagents finish in parallel, their completion notices are held back and delivered together as one message once every subagent is done, instead of waking the model one by one. |
 | **Automatic repair for broken subagent sessions** | **No toggle — always on.** When the platform is about to store a non-conforming retry event, the plugin corrects it before it is written, so the session never becomes unopenable. A light note appears at the end of the turn when a correction happens; corrections are recorded in the session log, so it **still shows after a restart**. |
 | **Repair corrupted sessions** | Scan button. Scans every session log and repairs the known kinds of corruption, so a history that refuses to open becomes usable again. |
@@ -148,7 +150,7 @@ pnpm install
 node scripts/link-deps.mjs    # link host packages into this project's node_modules
 pnpm build                     # tsc (host) + vite (client)
 pnpm typecheck                 # type check only
-pnpm test                      # vitest, 351 tests (17 test files)
+pnpm test                      # vitest, 368 tests (18 test files)
 ```
 
 ## Design

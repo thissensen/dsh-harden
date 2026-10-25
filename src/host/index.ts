@@ -46,6 +46,7 @@ import { mountJobBackground } from './job-background.js'
 import { mountContextCompaction } from './compaction.js'
 import { mountSubagentAggregation } from './subagent-aggregate.js'
 import { mountRetryIntercept } from './retry-intercept.js'
+import { mountPtcBudget } from './ptc-budget.js'
 import { SETTINGS_NAMESPACE } from './config.js'
 
 /** 平台按这个 id 认配置 schema（`Config` 是平台侧的约定名，见 config.ts）。 */
@@ -98,10 +99,12 @@ export function apply(ctx: Ctx, config: unknown): void {
         `[harden] 规则「上下文自动压缩」= ${now.contextCompaction ? `开，阈值 ${now.compactionThreshold}，范围 ${now.compactionScope}` : '关'}`,
     )
     logger.info?.(`[harden] 规则「子代理通知聚合」= ${now.subagentAggregation ? '开' : '关'}`)
+    logger.info?.(`[harden] 规则「突破 PTC 120 秒限制」= ${now.ptcBreakLimit ? '开' : '关'}`)
 
     mountConfigApi(ctx, logger, config)
     mountContextCompaction(ctx, logger, () => current())
     mountJobBackground(ctx, logger, () => current().backgroundJobTool)
+    mountPtcBudget(ctx, logger, () => current().ptcBreakLimit)
     mountSubagentAggregation(ctx, logger, () => current())
     mountRetryIntercept(ctx, logger)
 }

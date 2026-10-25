@@ -114,6 +114,13 @@ export const DEFAULT_COMPACTION_INSTRUCTION = [
  */
 export const DEFAULT_SUBAGENT_AGGREGATION = false
 
+/**
+ * 默认值：规则「突破 PTC 120 秒限制」的开关。
+ *
+ * 默认**关**——预算放大后写坏的程序不再自动到点结束，默认不动手。
+ */
+export const DEFAULT_PTC_BREAK_LIMIT = false
+
 /** 平台按这个名字认配置 schema（`Config = { … }` 是平台侧的约定名）。 */
 export const Config = z.object({
     toolFailureGuard: z.boolean().default(DEFAULT_TOOL_FAILURE_GUARD).volatile(),
@@ -127,6 +134,7 @@ export const Config = z.object({
     compactionThreshold: z.string().default(DEFAULT_COMPACTION_THRESHOLD).volatile(),
     compactionInstruction: z.string().default(DEFAULT_COMPACTION_INSTRUCTION).volatile(),
     subagentAggregation: z.boolean().default(DEFAULT_SUBAGENT_AGGREGATION).volatile(),
+    ptcBreakLimit: z.boolean().default(DEFAULT_PTC_BREAK_LIMIT).volatile(),
 })
 
 /**
@@ -154,6 +162,7 @@ export function readConfig(raw: unknown): Required<HardenConfig> {
         compactionThreshold: unwrapField(obj.compactionThreshold, DEFAULT_COMPACTION_THRESHOLD, 'string'),
         compactionInstruction: unwrapField(obj.compactionInstruction, DEFAULT_COMPACTION_INSTRUCTION, 'string'),
         subagentAggregation: unwrapField(obj.subagentAggregation, DEFAULT_SUBAGENT_AGGREGATION, 'boolean'),
+        ptcBreakLimit: unwrapField(obj.ptcBreakLimit, DEFAULT_PTC_BREAK_LIMIT, 'boolean'),
     }
 }
 
@@ -171,6 +180,7 @@ export function defaultConfig(): Required<HardenConfig> {
         compactionThreshold: DEFAULT_COMPACTION_THRESHOLD,
         compactionInstruction: DEFAULT_COMPACTION_INSTRUCTION,
         subagentAggregation: DEFAULT_SUBAGENT_AGGREGATION,
+        ptcBreakLimit: DEFAULT_PTC_BREAK_LIMIT,
     }
 }
 

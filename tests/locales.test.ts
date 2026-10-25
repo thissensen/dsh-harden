@@ -48,6 +48,10 @@ describe('zh / en 两份字典', () => {
             'header.checkFailed',
             'progress.rowAria',
             'panel.latestVersionMissing',
+            'rule.ptcBreakLimit.title',
+            'rule.ptcBreakLimit.desc',
+            'rule.ptcBreakLimit.help',
+            'api.ptcBreakLimitNotBoolean',
         ]
 
         for (const 词条 of 新词条组) {

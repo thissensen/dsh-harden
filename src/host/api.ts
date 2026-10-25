@@ -437,6 +437,12 @@ async function handleUpdateConfig(req: IncomingMessage, res: ServerResponse, dep
         return
     }
 
+    const ptcBreakLimit = body?.ptcBreakLimit
+    if (typeof ptcBreakLimit !== 'boolean') {
+        json(res, 400, { ok: false, error: 'api.ptcBreakLimitNotBoolean' })
+        return
+    }
+
     const contextCompaction = body?.contextCompaction
     if (typeof contextCompaction !== 'boolean') {
         json(res, 400, { ok: false, error: 'api.contextCompactionNotBoolean' })
@@ -472,6 +478,7 @@ async function handleUpdateConfig(req: IncomingMessage, res: ServerResponse, dep
             networkRetryTokens,
             backgroundJobTool,
             subagentAggregation,
+            ptcBreakLimit,
             contextCompaction,
             compactionScope,
             compactionThreshold,

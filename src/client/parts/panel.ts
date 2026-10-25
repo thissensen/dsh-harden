@@ -69,6 +69,7 @@ interface HardenSettings {
     networkRetryCount: number
     networkRetryTokens: string
     backgroundJobTool: boolean
+    ptcBreakLimit: boolean
     subagentAggregation: boolean
     contextCompaction: boolean
     compactionScope: CompactionScope
@@ -171,6 +172,7 @@ async function loadSettings(): Promise<HardenSettings> {
             : DEFAULT_NETWORK_RETRY_COUNT,
         networkRetryTokens: typeof fields.networkRetryTokens === 'string' ? fields.networkRetryTokens : '',
         backgroundJobTool: typeof fields.backgroundJobTool === 'boolean' ? fields.backgroundJobTool : true,
+        ptcBreakLimit: typeof fields.ptcBreakLimit === 'boolean' ? fields.ptcBreakLimit : false,
         subagentAggregation: typeof fields.subagentAggregation === 'boolean' ? fields.subagentAggregation : false,
         contextCompaction: typeof fields.contextCompaction === 'boolean' ? fields.contextCompaction : false,
         compactionScope: readCompactionScope(fields.compactionScope),
@@ -426,6 +428,16 @@ function renderBody(
             disabled: busy,
             onToggle: async (next) => {
                 await onPatch({ backgroundJobTool: next })
+            },
+        }),
+        renderSwitchCard({
+            title: t('rule.ptcBreakLimit.title'),
+            description: t('rule.ptcBreakLimit.desc'),
+            help: t('rule.ptcBreakLimit.help'),
+            checked: state.settings.ptcBreakLimit,
+            disabled: busy,
+            onToggle: async (next) => {
+                await onPatch({ ptcBreakLimit: next })
             },
         }),
         renderSwitchCard({

@@ -1,7 +1,7 @@
 /**
  * HTTP 端点（`src/host/api.ts`）的单元测试。
  *
- * **被测对象是本插件唯一的对外暴露面，也是唯一的安全边界**：读 / 写两道围栏、十一个字段的端点校验
+ * **被测对象是本插件唯一的对外暴露面，也是唯一的安全边界**：读 / 写两道围栏、十二个字段的端点校验
  * 与错误码、请求体读取的 400 / 413、暗号参数的竖线转义、逐文件容错的四类计数，以及页头「检查更新」
  * 用的只读版本端点。这些口径此前只有真机手工 curl 过三态（B-6），这里补回归网。
  *
@@ -63,7 +63,7 @@ vi.mock('../src/host/session-repair.js', async (importOriginal) => {
     }
 })
 
-/** 十一个可写字段各取一个合法值：合法请求体与「patch 字段齐全」断言共用这一份。 */
+/** 十二个可写字段各取一个合法值：合法请求体与「patch 字段齐全」断言共用这一份。 */
 const 合法配置: Required<HardenConfig> = {
     toolFailureGuard: true,
     toolFailurePrefixes: '工具调用失败',
@@ -72,6 +72,7 @@ const 合法配置: Required<HardenConfig> = {
     networkRetryTokens: 'SERVER,TIMEOUT',
     backgroundJobTool: true,
     subagentAggregation: true,
+    ptcBreakLimit: false,
     contextCompaction: true,
     compactionScope: 'all',
     compactionThreshold: '200K',
@@ -85,7 +86,7 @@ interface 字段校验行 {
     期望错误码: string
 }
 
-/** 十一个字段各自的非法取值（顺序与端点里的校验顺序一致）。 */
+/** 十二个字段各自的非法取值（顺序与端点里的校验顺序一致）。 */
 const 字段校验表: 字段校验行[] = [
     { 字段名: 'toolFailureGuard', 非法值: 'yes', 期望错误码: 'api.toolFailureGuardNotBoolean' },
     { 字段名: 'emptyOutputGuard', 非法值: 'true', 期望错误码: 'api.emptyOutputGuardNotBoolean' },
@@ -94,6 +95,7 @@ const 字段校验表: 字段校验行[] = [
     { 字段名: 'toolFailurePrefixes', 非法值: 42, 期望错误码: 'api.toolFailurePrefixesInvalid' },
     { 字段名: 'backgroundJobTool', 非法值: 1, 期望错误码: 'api.backgroundJobToolNotBoolean' },
     { 字段名: 'subagentAggregation', 非法值: null, 期望错误码: 'api.subagentAggregationNotBoolean' },
+    { 字段名: 'ptcBreakLimit', 非法值: 'yes', 期望错误码: 'api.ptcBreakLimitNotBoolean' },
     { 字段名: 'contextCompaction', 非法值: 'off', 期望错误码: 'api.contextCompactionNotBoolean' },
     { 字段名: 'compactionScope', 非法值: 'both', 期望错误码: 'api.compactionScopeInvalid' },
     { 字段名: 'compactionThreshold', 非法值: 'abc', 期望错误码: 'api.compactionThresholdInvalid' },
@@ -384,7 +386,7 @@ describe('POST /config 字段校验', () => {
         expect(JSON.parse(响应.body)).toEqual({ ok: false, error: 'api.networkRetryCountInvalid' })
     })
 
-    it('十一个字段全合法 ⇒ 200，且把十一个字段一起写给 settings', async () => {
+    it('十二个字段全合法 ⇒ 200，且把十二个字段一起写给 settings', async () => {
         const { scope, 写入补丁组 } = 造作用域桩(合法配置)
         const handler = 挂载端点(造依赖({ getScope: () => scope }))
         const 响应 = await 调端点(handler, 造写请求桩(合法配置))
@@ -393,7 +395,7 @@ describe('POST /config 字段校验', () => {
         expect(JSON.parse(响应.body)).toEqual({ ok: true })
         expect(写入补丁组).toEqual([合法配置])
         expect(Object.keys(写入补丁组[0]).sort()).toEqual(Object.keys(合法配置).sort())
-        expect(Object.keys(合法配置)).toHaveLength(11)
+        expect(Object.keys(合法配置)).toHaveLength(12)
     })
 
     it('设置服务拒写 ⇒ 400 api.writeFailed|…，且原因里的竖线被换成斜杠', async () => {

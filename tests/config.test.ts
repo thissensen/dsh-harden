@@ -17,6 +17,7 @@ import {
     DEFAULT_CONTEXT_COMPACTION,
     DEFAULT_EMPTY_OUTPUT_GUARD,
     DEFAULT_NETWORK_RETRY_TOKENS,
+    DEFAULT_PTC_BREAK_LIMIT,
     DEFAULT_COMPACTION_SCOPE,
     DEFAULT_TOOL_FAILURE_GUARD,
     DEFAULT_TOOL_FAILURE_PREFIXES,
@@ -69,6 +70,7 @@ describe('配置层默认值', () => {
         expect(config.compactionScope).toBe(DEFAULT_COMPACTION_SCOPE)
         expect(config.compactionThreshold).toBe(DEFAULT_COMPACTION_THRESHOLD)
         expect(config.compactionInstruction).toBe(DEFAULT_COMPACTION_INSTRUCTION)
+        expect(config.ptcBreakLimit).toBe(DEFAULT_PTC_BREAK_LIMIT)
     })
 
     it('networkRetryCount 的默认值与共享口径常量同源（跨半边只有一份）', () => {
@@ -110,5 +112,21 @@ describe('配置层默认值', () => {
         expect(config.contextCompaction).toBe(DEFAULT_CONTEXT_COMPACTION)
         expect(config.compactionThreshold).toBe(DEFAULT_COMPACTION_THRESHOLD)
         expect(config.compactionInstruction).toBe(DEFAULT_COMPACTION_INSTRUCTION)
+    })
+
+    it('ptcBreakLimit 默认 false，且与导出的默认常量同源', () => {
+        expect(DEFAULT_PTC_BREAK_LIMIT).toBe(false)
+        expect(defaultConfig().ptcBreakLimit).toBe(DEFAULT_PTC_BREAK_LIMIT)
+        expect(readConfig({}).ptcBreakLimit).toBe(DEFAULT_PTC_BREAK_LIMIT)
+    })
+
+    it('readConfig 解包 ptcBreakLimit 的 volatile 引用', () => {
+        expect(readConfig({ ptcBreakLimit: { get: () => true } }).ptcBreakLimit).toBe(true)
+    })
+
+    it('ptcBreakLimit 类型不符时回落 false', () => {
+        expect(readConfig({ ptcBreakLimit: 'yes' }).ptcBreakLimit).toBe(DEFAULT_PTC_BREAK_LIMIT)
+        expect(readConfig({ ptcBreakLimit: 1 }).ptcBreakLimit).toBe(DEFAULT_PTC_BREAK_LIMIT)
+        expect(readConfig({ ptcBreakLimit: null }).ptcBreakLimit).toBe(DEFAULT_PTC_BREAK_LIMIT)
     })
 })
