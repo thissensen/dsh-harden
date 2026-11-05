@@ -1,17 +1,23 @@
 /**
  * 规则 H3（网络请求中断续跑）判定逻辑的持久化测试。
  *
- * 被测对象是 `src/host/retry.ts` 导出的两个纯函数：
- * `matchesRetryTokens()` 判定失败是否该兜底重试；`takeRetrySlot()` 管兜底名额。
+ * 被测对象是 `src/host/retry.ts` 导出的纯函数：`matchesRetryTokens()` 判定失败是否该兜底重试；
+ * `takeRetrySlot()` 管兜底名额；`buildRetryEvents()` 写出的 `policyKey` 是「换模型 = 换链」的关键。
  *
- * 判定与记账是两条独立的口径，这里分开覆盖：判定只看失败特征，记账只看坐标与上限。
+ * 判定与记账是两条独立的口径，这里分开覆盖：判定只看失败特征，记账只看链坐标与上限。
  *
  * @module dsh-harden/tests/retry
  */
 
 import { describe, expect, it } from 'vitest'
 import type { LlmFailureLike } from '../src/host/types.js'
-import { buildRetryEvents, matchesRetryTokens, takeRetrySlot, type RetryBudget } from '../src/host/retry.js'
+import {
+    buildRetryEvents,
+    matchesRetryTokens,
+    takeRetrySlot,
+    type RetryBudget,
+    type RetryCoordinate,
+} from '../src/host/retry.js'
 
 /** 默认特征清单：与 `config.ts` 的 `DEFAULT_NETWORK_RETRY_TOKENS` 保持一致。 */
 const DEFAULT_TOKENS = 'SERVER,RATE_LIMIT,TIMEOUT,TRANSPORT,502,429'
@@ -88,47 +94,52 @@ describe('takeRetrySlot', () => {
         return new WeakMap()
     }
 
+    /** 造一条链坐标：默认落在同一条链上（xkiro / m1）。 */
+    function 造坐标(turn: number, step: number, provider = 'xkiro', model = 'm1'): RetryCoordinate {
+        return { turn, step, provider, model }
+    }
+
     it('第一次占用返回 1，之后每次加一', () => {
         const budgets = makeBudgets()
         const agent = {}
 
-        expect(takeRetrySlot(budgets, agent, 1, 3, 3)).toEqual({ count: 1, retryId: expect.any(String) })
-        expect(takeRetrySlot(budgets, agent, 1, 3, 3)).toEqual({ count: 2, retryId: expect.any(String) })
-        expect(takeRetrySlot(budgets, agent, 1, 3, 3)).toEqual({ count: 3, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 造坐标(1, 3), 3)).toEqual({ count: 1, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 造坐标(1, 3), 3)).toEqual({ count: 2, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 造坐标(1, 3), 3)).toEqual({ count: 3, retryId: expect.any(String) })
     })
 
     it('用满上限后返回 null', () => {
         const budgets = makeBudgets()
         const agent = {}
 
-        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toEqual({ count: 1, retryId: expect.any(String) })
-        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toEqual({ count: 2, retryId: expect.any(String) })
-        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toBeNull()
+        expect(takeRetrySlot(budgets, agent, 造坐标(1, 3), 2)).toEqual({ count: 1, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 造坐标(1, 3), 2)).toEqual({ count: 2, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 造坐标(1, 3), 2)).toBeNull()
     })
 
     it('上限为 0 时一次都不给', () => {
         const budgets = makeBudgets()
 
-        expect(takeRetrySlot(budgets, {}, 1, 3, 0)).toBeNull()
+        expect(takeRetrySlot(budgets, {}, 造坐标(1, 3), 0)).toBeNull()
     })
 
     it('步号变化 = 名额重置', () => {
         const budgets = makeBudgets()
         const agent = {}
 
-        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toEqual({ count: 1, retryId: expect.any(String) })
-        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toEqual({ count: 2, retryId: expect.any(String) })
-        expect(takeRetrySlot(budgets, agent, 1, 3, 2)).toBeNull()
-        expect(takeRetrySlot(budgets, agent, 1, 4, 2)).toEqual({ count: 1, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 造坐标(1, 3), 2)).toEqual({ count: 1, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 造坐标(1, 3), 2)).toEqual({ count: 2, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 造坐标(1, 3), 2)).toBeNull()
+        expect(takeRetrySlot(budgets, agent, 造坐标(1, 4), 2)).toEqual({ count: 1, retryId: expect.any(String) })
     })
 
     it('回合号变化 = 名额重置', () => {
         const budgets = makeBudgets()
         const agent = {}
 
-        expect(takeRetrySlot(budgets, agent, 1, 3, 1)).toEqual({ count: 1, retryId: expect.any(String) })
-        expect(takeRetrySlot(budgets, agent, 1, 3, 1)).toBeNull()
-        expect(takeRetrySlot(budgets, agent, 2, 3, 1)).toEqual({ count: 1, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 造坐标(1, 3), 1)).toEqual({ count: 1, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agent, 造坐标(1, 3), 1)).toBeNull()
+        expect(takeRetrySlot(budgets, agent, 造坐标(2, 3), 1)).toEqual({ count: 1, retryId: expect.any(String) })
     })
 
     it('不同 agent 的名额互不影响', () => {
@@ -136,18 +147,18 @@ describe('takeRetrySlot', () => {
         const agentA = {}
         const agentB = {}
 
-        expect(takeRetrySlot(budgets, agentA, 1, 3, 1)).toEqual({ count: 1, retryId: expect.any(String) })
-        expect(takeRetrySlot(budgets, agentA, 1, 3, 1)).toBeNull()
-        expect(takeRetrySlot(budgets, agentB, 1, 3, 1)).toEqual({ count: 1, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agentA, 造坐标(1, 3), 1)).toEqual({ count: 1, retryId: expect.any(String) })
+        expect(takeRetrySlot(budgets, agentA, 造坐标(1, 3), 1)).toBeNull()
+        expect(takeRetrySlot(budgets, agentB, 造坐标(1, 3), 1)).toEqual({ count: 1, retryId: expect.any(String) })
     })
 
-    it('同一 turn+step 内多次占用共用同一个 retryId', () => {
+    it('同一链坐标内多次占用共用同一个 retryId', () => {
         const budgets = makeBudgets()
         const agent = {}
 
-        const firstSlot = takeRetrySlot(budgets, agent, 1, 3, 3)
-        const secondSlot = takeRetrySlot(budgets, agent, 1, 3, 3)
-        const thirdSlot = takeRetrySlot(budgets, agent, 1, 3, 3)
+        const firstSlot = takeRetrySlot(budgets, agent, 造坐标(1, 3), 3)
+        const secondSlot = takeRetrySlot(budgets, agent, 造坐标(1, 3), 3)
+        const thirdSlot = takeRetrySlot(budgets, agent, 造坐标(1, 3), 3)
 
         expect(firstSlot?.retryId).toEqual(expect.any(String))
         expect(secondSlot?.retryId).toBe(firstSlot?.retryId)
@@ -158,14 +169,36 @@ describe('takeRetrySlot', () => {
         const budgets = makeBudgets()
         const agent = {}
 
-        const slotOnStepThree = takeRetrySlot(budgets, agent, 1, 3, 5)
-        const slotOnStepFour = takeRetrySlot(budgets, agent, 1, 4, 5)
-        const slotOnTurnTwo = takeRetrySlot(budgets, agent, 2, 3, 5)
+        const slotOnStepThree = takeRetrySlot(budgets, agent, 造坐标(1, 3), 5)
+        const slotOnStepFour = takeRetrySlot(budgets, agent, 造坐标(1, 4), 5)
+        const slotOnTurnTwo = takeRetrySlot(budgets, agent, 造坐标(2, 3), 5)
 
         expect(slotOnStepThree?.retryId).toEqual(expect.any(String))
         expect(slotOnStepFour?.retryId).not.toBe(slotOnStepThree?.retryId)
         expect(slotOnTurnTwo?.retryId).not.toBe(slotOnStepThree?.retryId)
         expect(slotOnTurnTwo?.retryId).not.toBe(slotOnStepFour?.retryId)
+    })
+
+    it('provider 变化 = 换链，retryId 变新', () => {
+        const budgets = makeBudgets()
+        const agent = {}
+
+        const 首链 = takeRetrySlot(budgets, agent, 造坐标(1, 3, 'xkiro'), 5)
+        const 换链 = takeRetrySlot(budgets, agent, 造坐标(1, 3, 'command-code'), 5)
+
+        expect(换链?.count).toBe(1)
+        expect(换链?.retryId).not.toBe(首链?.retryId)
+    })
+
+    it('model 变化 = 换链，retryId 变新', () => {
+        const budgets = makeBudgets()
+        const agent = {}
+
+        const 首链 = takeRetrySlot(budgets, agent, 造坐标(1, 3, 'xkiro', 'm1'), 5)
+        const 换链 = takeRetrySlot(budgets, agent, 造坐标(1, 3, 'xkiro', 'm2'), 5)
+
+        expect(换链?.count).toBe(1)
+        expect(换链?.retryId).not.toBe(首链?.retryId)
     })
 })
 
@@ -175,6 +208,7 @@ describe('buildRetryEvents', () => {
         turn: 2,
         step: 5,
         provider: 'xkiro',
+        model: 'deepseek-v4',
         failure: { code: 'SERVER', status: 502, message: 'Bad Gateway' },
     }
 
@@ -215,6 +249,12 @@ describe('buildRetryEvents', () => {
         expect(events.scheduledData.failure).toEqual(payload.failure)
         expect(events.startedData.turn).toBe(2)
         expect(events.startedData.step).toBe(5)
+    })
+
+    it('policyKey 把模型编进去：平台链键里没有 model，换模型才真的换链', () => {
+        const events = buildRetryEvents(payload, 'retry-id-1', 1, 3)
+
+        expect(events.scheduledData.policyKey).toBe('["harden-fallback","deepseek-v4"]')
     })
 
     it('传入的 retryId 原样写进两条事件', () => {

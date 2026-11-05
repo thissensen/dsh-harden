@@ -1,6 +1,6 @@
 {
   "name": "dsh-harden",
-  "version": "0.0.3",
+  "version": "0.1.0",
   "license": "MIT",
   "type": "module",
   "description": "DSH 运行时看护层：在 agent 生命周期的关键点做防护，保证任何停止都有明确原因，不让异常静默变成正常结束。",
@@ -40,7 +40,7 @@
     }
   },
   "engines": {
-    "dsh": ">=0.2.1-rc.2"
+    "dsh": ">=0.2.2-rc.1"
   },
   "files": [
     "lib",
@@ -58,15 +58,15 @@
     "test": "vitest run"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "~4.0.5",
-    "@deepseek-ai/dsh-agent": ">=0.2.1-rc.2",
-    "@deepseek-ai/dsh-compaction": ">=0.2.1-rc.2",
-    "@deepseek-ai/dsh-jobs": ">=0.2.1-rc.2",
-    "@deepseek-ai/dsh-llm": ">=0.2.1-rc.2",
-    "@deepseek-ai/dsh-sandbox": ">=0.2.1-rc.2",
-    "@deepseek-ai/dsh-settings": ">=0.2.1-rc.2",
-    "@deepseek-ai/dsh-shell": ">=0.2.1-rc.2",
-    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.2",
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-agent": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-compaction": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-jobs": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-sandbox": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-settings": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-shell": ">=0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": ">=0.2.2-rc.1",
     "@deepseek-ai/schemastery": "*"
   },
   "devDependencies": {

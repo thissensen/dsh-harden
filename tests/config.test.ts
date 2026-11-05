@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+    DEFAULT_AUTH_COOKIE_SWEEP,
     DEFAULT_BACKGROUND_JOB_TOOL,
     DEFAULT_COMPACTION_INSTRUCTION,
     DEFAULT_COMPACTION_THRESHOLD,
@@ -71,6 +72,7 @@ describe('配置层默认值', () => {
         expect(config.compactionThreshold).toBe(DEFAULT_COMPACTION_THRESHOLD)
         expect(config.compactionInstruction).toBe(DEFAULT_COMPACTION_INSTRUCTION)
         expect(config.ptcBreakLimit).toBe(DEFAULT_PTC_BREAK_LIMIT)
+        expect(config.authCookieSweep).toBe(DEFAULT_AUTH_COOKIE_SWEEP)
     })
 
     it('networkRetryCount 的默认值与共享口径常量同源（跨半边只有一份）', () => {
@@ -128,5 +130,21 @@ describe('配置层默认值', () => {
         expect(readConfig({ ptcBreakLimit: 'yes' }).ptcBreakLimit).toBe(DEFAULT_PTC_BREAK_LIMIT)
         expect(readConfig({ ptcBreakLimit: 1 }).ptcBreakLimit).toBe(DEFAULT_PTC_BREAK_LIMIT)
         expect(readConfig({ ptcBreakLimit: null }).ptcBreakLimit).toBe(DEFAULT_PTC_BREAK_LIMIT)
+    })
+
+    it('authCookieSweep 默认开（不清理就会攒到页面打不开，是止损开关）', () => {
+        expect(DEFAULT_AUTH_COOKIE_SWEEP).toBe(true)
+        expect(defaultConfig().authCookieSweep).toBe(DEFAULT_AUTH_COOKIE_SWEEP)
+        expect(readConfig({}).authCookieSweep).toBe(DEFAULT_AUTH_COOKIE_SWEEP)
+    })
+
+    it('readConfig 解包 authCookieSweep 的 volatile 引用', () => {
+        expect(readConfig({ authCookieSweep: { get: () => false } }).authCookieSweep).toBe(false)
+    })
+
+    it('authCookieSweep 类型不符时回落 true', () => {
+        expect(readConfig({ authCookieSweep: 'yes' }).authCookieSweep).toBe(DEFAULT_AUTH_COOKIE_SWEEP)
+        expect(readConfig({ authCookieSweep: 1 }).authCookieSweep).toBe(DEFAULT_AUTH_COOKIE_SWEEP)
+        expect(readConfig({ authCookieSweep: null }).authCookieSweep).toBe(DEFAULT_AUTH_COOKIE_SWEEP)
     })
 })

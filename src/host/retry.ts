@@ -16,10 +16,16 @@ import { randomUUID } from 'node:crypto'
 
 import type { LlmFailureLike } from './types.js'
 
-/** 一个 agent 在一个 `turn/step` 上已经兜底重试了几次，以及本链的重试 id。 */
-export interface RetryBudget {
+/** 一条兜底重试的链坐标：回合、步、provider 与模型，四者全等才算同一条链。 */
+export interface RetryCoordinate {
     turn: number
     step: number
+    provider: string
+    model: string
+}
+
+/** 一个 agent 在一条链上已经兜底重试了几次，以及本链的重试 id。 */
+export interface RetryBudget extends RetryCoordinate {
     count: number
     retryId: string
 }
@@ -51,8 +57,18 @@ export interface RetryStartedEventData {
     retry: number
 }
 
-/** 本插件兜底重试在事件 `policyKey` 上的标记：与官方 provider 策略区分开。 */
-const FALLBACK_POLICY_KEY = '["harden-fallback"]'
+/**
+ * 本插件兜底重试写在事件 `policyKey` 上的标记：与官方 provider 策略区分开。
+ *
+ * **为什么把模型编进来。** 平台的链键是 `(turn, step, provider, policyKey)`——里面**没有 model**。
+ * 换模型若只改内存口径、policyKey 照旧，平台仍把两次重试当同一条链：它会看到两个 retryId、序号
+ * 从 1 重启，读这份会话时整份拒读。把 model 编进 policyKey，换模型在平台眼里才真的换链。
+ *
+ * @param model - 本次重试用的模型名；取不到时调用方传 `'-'`（都落在同一条链上，不制造新链）。
+ */
+function fallbackPolicyKey(model: string): string {
+    return JSON.stringify(['harden-fallback', model])
+}
 
 /**
  * 构造一对重试事件的数据：先 `llm/retry`（等待），再 `llm/retry-started`（已重试）。
@@ -70,7 +86,7 @@ const FALLBACK_POLICY_KEY = '["harden-fallback"]'
  * @returns 两条事件的类型与数据。
  */
 export function buildRetryEvents(
-    payload: { turn: number; step: number; provider: string; failure: LlmFailureLike },
+    payload: RetryCoordinate & { failure: LlmFailureLike },
     retryId: string,
     retry: number,
     maxRetries: number,
@@ -83,7 +99,7 @@ export function buildRetryEvents(
             step: payload.step,
             provider: payload.provider,
             mode: 'normal',
-            policyKey: FALLBACK_POLICY_KEY,
+            policyKey: fallbackPolicyKey(payload.model),
             retry,
             maxRetries,
             delayMs: 0,
@@ -119,36 +135,38 @@ export function matchesRetryTokens(failure: LlmFailureLike, tokens: string): boo
 /**
  * 占一次兜底重试名额。
  *
- * 名额按 `turn + step` 记账：同一 `turn/step` 上每占一次加一，超出上限就拒绝；
- * 坐标一变（新一步/新回合）计数自动清零。**只增不删**——WeakMap 的 key 是 agent
- * 对象本身，agent 回收时记录随之消失，不需要手工清理。
+ * 名额按链坐标（turn + step + provider + model）记账：同一坐标上每占一次加一，超出上限就拒绝；
+ * 坐标任一项一变（新回合/新一步/换 provider/换模型）计数自动清零。**只增不删**——WeakMap 的 key 是
+ * agent 对象本身，agent 回收时记录随之消失，不需要手工清理。
  *
- * **同链共用一个 retryId。** 平台校验要求同一 policy chain（turn+step+provider+policyKey）
- * 内的 retry 事件复用同一个 retryId，新链的 retryId 必须全局未出现过。所以「链是否变化」
- * 的判据只在这里写一份：链内复用，换链重新生成。
+ * **同链共用一个 retryId。** 平台校验要求同一 policy chain 内的 retry 事件复用同一个 retryId，新链的
+ * retryId 必须全局未出现过。所以「链是否变化」的判据只在这里写一份：链内复用，换链重新生成。
+ * 注意平台的链键里没有 model，换模型要靠 `fallbackPolicyKey` 把 model 编进 policyKey 才成为新链。
  *
  * @param budgets - 每个 agent 的兜底重试记账。
  * @param agent - agent 对象（WeakMap 的 key）。
- * @param turn - 当前回合。
- * @param step - 当前步号。
+ * @param 坐标 - 本次重试的链坐标。
  * @param limit - 用户配置的兜底次数上限。
  * @returns 还有名额时返回本链的 retryId 与这是第几次（从 1 起）；已用尽返回 null。
  */
 export function takeRetrySlot(
     budgets: WeakMap<object, RetryBudget>,
     agent: object,
-    turn: number,
-    step: number,
+    坐标: RetryCoordinate,
     limit: number,
 ): { count: number; retryId: string } | null {
     const previous = budgets.get(agent)
-    const isSameStep = previous !== undefined && previous.turn === turn && previous.step === step
-    const count = isSameStep ? previous.count + 1 : 1
+    const 是否同链 = previous !== undefined &&
+        previous.turn === 坐标.turn &&
+        previous.step === 坐标.step &&
+        previous.provider === 坐标.provider &&
+        previous.model === 坐标.model
+    const count = 是否同链 ? previous.count + 1 : 1
 
     if (count > limit) return null
 
-    const retryId = isSameStep ? previous.retryId : randomUUID()
-    budgets.set(agent, { turn, step, count, retryId })
+    const retryId = 是否同链 ? previous.retryId : randomUUID()
+    budgets.set(agent, { ...坐标, count, retryId })
     return { count, retryId }
 }
 

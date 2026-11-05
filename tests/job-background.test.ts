@@ -3,7 +3,7 @@
  *
  * **为什么不导出私有函数。** `validateArgs` 与 `resolveWorkdir` 全仓各只有一处引用，为了测试
  * 把它们导出等于把内部实现变成对外承诺。这里改走真实入口：`mountJobBackground` → 假 ctx 的
- * `inject` 立刻同步回调 → 从假 `tools.register` 捕获 definition → 直接
+ * `inject` 立刻同步回调 → 从假 `tools.register` 捕获 definition 与注册选项 → 直接
  * `await definition.execute(args, exec)`；参数校验与 workdir 解析因此都是被真实执行的。
  *
  * `defineTool` 的产物 `execute` 直接可调、入参形状就是 `(args, exec)`（已用探针核实）。
@@ -13,6 +13,7 @@
 
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { SandboxUnavailableError } from '@deepseek-ai/dsh-sandbox'
 import { mountJobBackground } from '../src/host/job-background.js'
 import type { Ctx, Logger } from '../src/host/types.js'
 
@@ -38,6 +39,13 @@ interface 任务记录 {
     kind: string
     label: string
     owner?: string
+    /** job hooks：平台 registry 会调 `run()`，用例自己调才能拿到 `done`。 */
+    run(): { done: Promise<{ status: string; detail?: string }> }
+}
+
+/** `tools.register` 的第二个参数：本工具只用到步级准入判定。 */
+interface 注册选项 {
+    when: () => boolean
 }
 
 /** `defineTool` 产物里本测试用到的面。 */
@@ -52,16 +60,14 @@ interface 执行环境 {
     callId: string
 }
 
-/** 假宿主：注入立刻回调，服务按名现取，注册与摘除都记账。 */
+/** 假宿主：注入立刻回调，服务按名现取，注册的 definition 与选项都记账。 */
 interface 假宿主 {
     readonly 依赖记录组: (readonly string[])[]
     readonly 请求记录组: 请求记录[]
     readonly 任务记录组: 任务记录[]
     readonly 注册组: 工具定义面[]
-    /** `settings/document-updated` 的监听器——工具开关随它重算。 */
-    readonly 配置更新通知: () => void
-    /** `register` 返回的 disposer 被调了几次。 */
-    readonly 摘除次数: () => number
+    /** 每次注册收到的选项——开关改成平台步级准入后，判据在这里。 */
+    readonly 注册选项组: 注册选项[]
 }
 
 /** 造一次工具调用的执行环境。 */
@@ -76,15 +82,15 @@ function 造执行环境(): 执行环境 {
 /**
  * 挂一遍工具并返回各项记账。
  *
- * @param 是否启用 - 现取现解的开关判定（测试里可随时翻转）。
+ * @param 是否启用 - 现取现解的开关判定（测试里可随时翻转）；注册时作为步级准入交给平台。
+ * @param 启动错误 - 假 `shell.execute` 抛出的错误；不给就抛「不该被调用」的哨兵。
  */
-function 造宿主(是否启用: () => boolean): 假宿主 {
+function 造宿主(是否启用: () => boolean, 启动错误?: Error): 假宿主 {
     const 依赖记录组: (readonly string[])[] = []
     const 请求记录组: 请求记录[] = []
     const 任务记录组: 任务记录[] = []
     const 注册组: 工具定义面[] = []
-    const 监听组 = new Map<string, () => void>()
-    let 摘除次数 = 0
+    const 注册选项组: 注册选项[] = []
 
     // 假 shell：resolve 记账后原样回抛——工具只消费 resolve 的结果，本测试也只断言那个入参。
     const 假shell = {
@@ -94,7 +100,7 @@ function 造宿主(是否启用: () => boolean): 假宿主 {
             return { ...request }
         },
         execute: async (): Promise<never> => {
-            throw new Error('本测试只验到 resolve 为止：shell.execute 不该被调用')
+            throw 启动错误 ?? new Error('本测试只验到 resolve 为止：shell.execute 不该被调用')
         },
     }
 
@@ -105,25 +111,23 @@ function 造宿主(是否启用: () => boolean): 假宿主 {
         },
     }
 
+    // 平台把第二个参数当步级准入：原样收下，由用例现取现判。
     const 假tools = {
-        register(definition: 工具定义面): () => void {
+        register(definition: 工具定义面, options: 注册选项): void {
             注册组.push(definition)
-            return () => {
-                摘除次数 += 1
-            }
+            注册选项组.push(options)
         },
     }
 
     const 服务表: Record<string, unknown> = { shell: 假shell, jobs: 假jobs, tools: 假tools }
 
-    // 外层与内层两个假上下文共用同一套服务取用、监听记录和注入回调。
+    // 外层与内层两个假上下文共用同一套服务取用与注入回调。
     const 工具上下文: Ctx = {
         get<T>(name: string): T | undefined {
             return 服务表[name] as T | undefined
         },
-        on(event: string, listener: () => void): void {
-            监听组.set(event, listener)
-        },
+        // 本模块注册后不再监听事件，`Ctx` 的必供成员补个空桩。
+        on() {},
         inject(依赖组: readonly string[], callback: (ctx: Ctx) => void): void {
             依赖记录组.push(依赖组)
             callback(工具上下文)
@@ -140,8 +144,7 @@ function 造宿主(是否启用: () => boolean): 假宿主 {
         请求记录组,
         任务记录组,
         注册组,
-        配置更新通知: 监听组.get('settings/document-updated') as () => void,
-        摘除次数: () => 摘除次数,
+        注册选项组,
     }
 }
 
@@ -268,38 +271,66 @@ describe('正常路径', () => {
 
         expect(宿主.任务记录组[0].label).toBe(长命令.slice(0, 60))
     })
+
+    it('spec 不带 outputLimitBytes（截断交给通知内联与读取两档边界）', async () => {
+        const 宿主 = 造宿主(() => true)
+
+        await 宿主.注册组[0].execute({ command: 'echo hi' }, 造执行环境())
+
+        expect(Object.hasOwn(宿主.任务记录组[0], 'outputLimitBytes')).toBe(false)
+    })
+})
+
+describe('启动失败的终态明细', () => {
+    it('沙箱不可用的 code 换成中文说明，原文不进终态', async () => {
+        // 平台真实抛的就是这个类（原文长达数百字符），顺带证明按 code 的路由吃得下它的子类。
+        const 宿主 = 造宿主(() => true, new SandboxUnavailableError('workspace-write'))
+
+        await 宿主.注册组[0].execute({ command: 'echo hi' }, 造执行环境())
+        const 终态 = await 宿主.任务记录组[0].run().done
+
+        expect(终态.status).toBe('failed')
+        expect(终态.detail).toBe('沙箱不可用：本机没有可用的沙箱后端，命令未执行（SANDBOX_UNAVAILABLE）')
+    })
+
+    it('不认识的错误沿用原文', async () => {
+        const 宿主 = 造宿主(() => true, new Error('spawn ENOENT'))
+
+        await 宿主.注册组[0].execute({ command: 'echo hi' }, 造执行环境())
+        const 终态 = await 宿主.任务记录组[0].run().done
+
+        expect(终态.status).toBe('failed')
+        expect(终态.detail).toBe('spawn ENOENT')
+    })
 })
 
 describe('设置开关', () => {
-    it('开关关掉后 execute 直接抛「已禁用」（配置事件没送到的兜底）', async () => {
-        let 启用中 = true
-        const 宿主 = 造宿主(() => 启用中)
-        const 定义 = 宿主.注册组[0]
+    it('开关关掉时注册选项的 when 判 false', () => {
+        const 宿主 = 造宿主(() => false)
 
-        // 不触发 settings 事件：模拟注册表同步被漏掉的那一刻，execute 里那道兜底必须拦住。
-        启用中 = false
-
-        await expect(定义.execute({ command: 'echo hi' }, 造执行环境())).rejects.toThrow('已禁用')
-        expect(宿主.任务记录组.length).toBe(0)
+        expect(宿主.注册选项组[0].when()).toBe(false)
     })
 
-    it('开 → 关 → 开：disposer 被调用一次，翻回开启时重新注册', () => {
-        let 启用中 = true
+    it('翻回开启后 when 判 true，且全程只注册一次', () => {
+        let 启用中 = false
         const 宿主 = 造宿主(() => 启用中)
 
-        expect(宿主.注册组.length).toBe(1)
-        expect(宿主.摘除次数()).toBe(0)
-
-        启用中 = false
-        宿主.配置更新通知()
-
-        expect(宿主.摘除次数()).toBe(1)
-        expect(宿主.注册组.length).toBe(1)
+        expect(宿主.注册选项组[0].when()).toBe(false)
 
         启用中 = true
-        宿主.配置更新通知()
 
-        expect(宿主.摘除次数()).toBe(1)
-        expect(宿主.注册组.length).toBe(2)
+        expect(宿主.注册选项组[0].when()).toBe(true)
+        expect(宿主.注册选项组.length).toBe(1)
+    })
+
+    it('开关关掉但直接调用 execute 仍会真的起 job', async () => {
+        const 宿主 = 造宿主(() => false)
+
+        // 准入判在平台侧（when 决定声明与派发），工具内不再自查：
+        // 绕开平台直接调 definition.execute 就该照常跑，留残影说明旧的那道兜底没删净。
+        const 结果 = await 宿主.注册组[0].execute({ command: 'echo hi' }, 造执行环境())
+
+        expect(结果).toEqual({ kind: 'background', jobId: 任务ID })
+        expect(宿主.任务记录组.length).toBe(1)
     })
 })

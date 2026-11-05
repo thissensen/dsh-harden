@@ -30,12 +30,15 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
+    AUTH_COOKIE_SWEEP_THRESHOLD,
     DEFAULT_NETWORK_RETRY_COUNT,
     RETRY_COUNT_MAX,
     RETRY_COUNT_MIN,
-    parseTokenCount,
+    解析压缩阈值,
+    是否回环主机名,
     是否有更新版本,
 } from '../../host/shared-format'
+import { fetchJson, postJson } from '../harden-api'
 import { translateHostText, translateZh } from '../locales'
 import type { PlatformTranslate } from '../locales'
 
@@ -75,6 +78,7 @@ interface HardenSettings {
     compactionScope: CompactionScope
     compactionThreshold: string
     compactionInstruction: string
+    authCookieSweep: boolean
 }
 
 /** 面板加载状态机。 */
@@ -109,44 +113,10 @@ const VERSION_ENDPOINT = '/api/dsh-harden/latest-version'
 /** 有新版时按钮跳这里。 */
 const NPM_PACKAGE_URL = 'https://www.npmjs.com/package/dsh-harden'
 
-/** 写围栏要求的自定义头：它让请求变成非简单请求，跨站页面伪造不出来。 */
-const MUTATION_HEADER = { 'x-dsh-harden': '1' }
-
 /** 拿不到平台 `t` 时的中文兜底（模块级：每次渲染新建引用会让子组件白白重渲）。 */
 const FALLBACK_T: PlatformTranslate = translateZh()
 
 // ── 取数与写回 ──────────────────────────────────────────────────────────
-
-/**
- * 取一份 JSON，`ok` 不为 true 就当失败抛出。
- *
- * @param url - 端点。
- * @param options - fetch 选项。
- */
-async function fetchJson(url: string, options?: RequestInit): Promise<Record<string, unknown>> {
-    const response = await fetch(url, options)
-    const data = await response.json()
-
-    if (data?.ok !== true) {
-        throw Error(typeof data?.error === 'string' ? data.error : `HTTP ${response.status}`)
-    }
-
-    return data
-}
-
-/**
- * 打一个写请求。写围栏要求自定义头与 JSON content-type，两者都在这里给齐。
- *
- * @param url - 端点。
- * @param body - 请求体对象。
- */
-async function postJson(url: string, body: unknown): Promise<Record<string, unknown>> {
-    return fetchJson(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/json', ...MUTATION_HEADER },
-        body: JSON.stringify(body),
-    })
-}
 
 /**
  * 读配置。
@@ -178,6 +148,7 @@ async function loadSettings(): Promise<HardenSettings> {
         compactionScope: readCompactionScope(fields.compactionScope),
         compactionThreshold: typeof fields.compactionThreshold === 'string' ? fields.compactionThreshold : '200K',
         compactionInstruction: typeof fields.compactionInstruction === 'string' ? fields.compactionInstruction : '',
+        authCookieSweep: typeof fields.authCookieSweep === 'boolean' ? fields.authCookieSweep : true,
     }
 }
 
@@ -473,7 +444,30 @@ function renderBody(
             createElement('div', { style: CARD_DESC }, t('rule.retryIntercept.desc')),
         ),
         createElement(SessionRepairCard, { t }),
+        // 开关**不禁用**：非回环只说明「这里不干活」，同一份配置换到本机地址打开时仍然有效——
+        // 禁用会让用户以为弄坏了什么。
+        renderSwitchCard({
+            title: t('rule.authCookieSweep.title'),
+            description: t('rule.authCookieSweep.desc'),
+            help: t('rule.authCookieSweep.help', { p1: AUTH_COOKIE_SWEEP_THRESHOLD }),
+            checked: state.settings.authCookieSweep,
+            disabled: busy,
+            note: 是回环页面() ? undefined : t('rule.authCookieSweep.inactive'),
+            onToggle: async (next) => {
+                await onPatch({ authCookieSweep: next })
+            },
+        }),
     )
+}
+
+/**
+ * 当前页面地址是否本机回环。
+ *
+ * 清理只在回环地址上动手（host 侧另有一道独立复核）；非回环时卡片上标一行灰字说明。
+ * **只在渲染时调用**——模块顶层调 `location` 会让没有 location 的环境在 import 时就炸。
+ */
+function 是回环页面(): boolean {
+    return 是否回环主机名(location.hostname)
 }
 
 /** 一张开关卡片的渲染参数。 */
@@ -483,6 +477,8 @@ interface SwitchCardProps {
     help: string
     checked: boolean
     disabled: boolean
+    /** 描述行下方的解释文本（可空）；**不是行尾控件槽**——行尾那一格留给控件（见 `03-模块规格.md` §模块二 §UI 形态）。 */
+    note?: string
     onToggle: (next: boolean) => void
 }
 
@@ -519,6 +515,8 @@ function renderSwitchCard(props: SwitchCardProps): ReactElement {
             }),
         ),
         createElement('div', { style: CARD_DESC }, props.description),
+        // 解释文本区：位置在描述下方、**不是行尾控件槽**（行尾那一格留给控件，见 `03-模块规格.md` §模块二 §UI 形态）。
+        props.note === undefined ? null : createElement('div', { style: FORCED_LABEL }, props.note),
     )
 }
 
@@ -883,7 +881,7 @@ function CompactionCard(props: CompactionCardProps): ReactElement {
     const thresholdText = thresholdDraft ?? props.settings.compactionThreshold
     const instructionText = instructionDraft ?? props.settings.compactionInstruction
 
-    const thresholdInvalid = parseTokenCount(thresholdText) === null
+    const thresholdInvalid = 解析压缩阈值(thresholdText) === null
 
     /** 提交触发阈值：非法就丢弃，等于原值就不发请求。 */
     async function commitThreshold(): Promise<void> {
@@ -891,7 +889,7 @@ function CompactionCard(props: CompactionCardProps): ReactElement {
 
         setThresholdDraft(null)
 
-        if (parseTokenCount(thresholdDraft) === null) return
+        if (解析压缩阈值(thresholdDraft) === null) return
         if (thresholdDraft === props.settings.compactionThreshold) return
 
         await props.onPatch({ compactionThreshold: thresholdDraft })

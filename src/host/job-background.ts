@@ -16,6 +16,14 @@
  * **timeoutMs 语义**（用户定稿）：填了 → `onExpiry: 'kill'`（到点杀）；不填 →
  * `onExpiry: 'none'`（不 arm 期限，靠 `job_kill` 手动停）。
  *
+ * **启用开关交给平台的步级准入**（0.2.2）：`tools.register(definition, { when: isEnabled })` 注册一次，
+ * 平台每一步对可见工具各求一次 `when`；返回 false 时该工具既不进模型可见的声明、也不能被派发。
+ * 所以不再自己监听设置文档更新事件来摘除重挂——准入本来就要每步重算，
+ * 插件侧再记一份只会多一处与平台判定打架的记账。
+ *
+ * **不设 `outputLimitBytes`**：完成通知的内联上限（`inlineOutputBytes`，默认 2048 字节）
+ * 与 `job_output` 的读取本来就是两档边界，生产方自拍一个上限只会把读取也一并截断。
+ *
  * **内部函数逐字对照** `dsh-tool-pwsh/lib/index.js`（仅加类型注解）：
  * - `sandboxNotes`   来源 L22-L30
  * - `processOutcome` 来源 L42-L55
@@ -132,9 +140,9 @@ interface JobOutcomeLike {
     result?: string
 }
 
-/** `ctx.tools.register` 返回精确 disposer。 */
+/** `ctx.tools.register` 返回精确 disposer；`when` 是步级准入判定（false ⇒ 既不进声明也不可派发）。 */
 interface ToolRuntimeLike {
-    register(definition: unknown): () => void
+    register(definition: unknown, options?: { when?: () => boolean }): () => void
 }
 
 /** `ctx.sandboxPolicy` 里本工具用到的面。 */
@@ -164,6 +172,20 @@ interface JobBackgroundArgs {
     sandbox_permissions?: string
     justification?: string
 }
+
+// ── 沙箱错误的可读终态说明 ────────────────────────────────────────────────
+
+/**
+ * 平台明写「按 code 路由、不要解析 message」；`SandboxUnavailableError` 的原文长达数百字符，
+ * 原样进 job 终态只会变成模型与用户眼里的噪音，所以认识的 code 换成中文说明，其余沿用原文。
+ *
+ * code 按字段读、不判 `instanceof`：真出现两份 `dsh-llm` 时类身份对不上，按字段读照样能路由。
+ */
+const 沙箱错误说明表: ReadonlyMap<string, string> = new Map([
+    ['SANDBOX_UNAVAILABLE', '沙箱不可用：本机没有可用的沙箱后端，命令未执行'],
+    ['SANDBOX_UNSUPPORTED_POLICY', '沙箱拒绝这条权限组合：当前部署不支持请求的策略，命令未执行'],
+    ['SANDBOX_INVALID_ROOT', '沙箱根目录不可用：额外的可写目录不存在、不是目录或是符号链接，命令未执行'],
+])
 
 // ── 内部函数（逐字对照 dsh-tool-pwsh/lib/index.js）──────────────────────
 
@@ -278,10 +300,18 @@ function processJob(
                     await proc.done
                 }
                 return outcome(proc)
-            } catch (error) {
+            } catch (err) {
+                let 终态明细 = err instanceof Error ? err.message : String(err)
+                const 沙箱错误码 = (err as { code?: unknown } | null)?.code
+
+                if (typeof 沙箱错误码 === 'string') {
+                    const 沙箱错误说明 = 沙箱错误说明表.get(沙箱错误码)
+                    if (沙箱错误说明 !== undefined) 终态明细 = `${沙箱错误说明}（${沙箱错误码}）`
+                }
+
                 return {
                     status: controller.signal.aborted && proc === undefined ? 'killed' : 'failed',
-                    detail: error instanceof Error ? error.message : String(error),
+                    detail: 终态明细,
                 }
             }
         })(),
@@ -371,7 +401,7 @@ async function resolveApprovedMode(
 
 const TOOL_DESCRIPTION =
     'Run a shell command as a background job and return its job id immediately. ' +
-    'Collect its output with job_output and stop it with job_kill. ' +
+    'Short output arrives with the completion notice; use job_output for longer output or early collection, and job_kill to stop it. ' +
     'When timeoutMs is omitted the command runs with no deadline until stopped explicitly; when given the command is killed on expiry. ' +
     'Paths use the session workspace by default; a relative workdir resolves against the session cwd. ' +
     'Managed $DSH_* variables expose current harness environment facts. ' +
@@ -387,7 +417,7 @@ const TOOL_DESCRIPTION =
  *
  * @param ctx - cordis 上下文。
  * @param logger - 日志出口。
- * @param isEnabled - 现取现解包配置的启用判定；默认 true。
+ * @param isEnabled - 现取现解包的启用判定，注册时作为平台的步级准入 `when`；默认恒 true。
  */
 export function mountJobBackground(
     ctx: Ctx,
@@ -464,12 +494,6 @@ export function mountJobBackground(
                 ],
             },
             async execute(args, exec) {
-                // 注册表同步是主防线（关掉即摘除）；这里是它的兜底——
-                // 万一平台改了 `settings/document-updated` 事件名，同步会静默失效，
-                // 至少别让一个已被配置关掉的工具还能跑。
-                if (isEnabled() === false) {
-                    throw new Error('job_background 工具当前已禁用（backgroundJobTool = false）')
-                }
                 validateArgs(args)
 
                 const typedExec = exec as unknown as ExecLike
@@ -536,30 +560,10 @@ export function mountJobBackground(
             },
         })
 
-        /**
-         * 按当前配置把工具挂上或摘下。
-         *
-         * 平台把 volatile 字段包成活引用、改配置不重启插件；这里监听
-         * `settings/document-updated` 重算，让「关掉开关」真的把工具从工具表摘掉，
-         * 而不是留一个调用必被拒的空壳。
-         */
-        let unregister: (() => void) | undefined
-        const syncRegistration = (): void => {
-            const wanted = isEnabled()
-            if (wanted && unregister === undefined) {
-                unregister = tools.register(definition)
-                logger.info?.(
-                    `[harden] 工具 ${TOOL_NAME} 已注册（沙箱升级=${escalationModes.length > 0 ? '开' : '关'}）`,
-                )
-
-            } else if (!wanted && unregister !== undefined) {
-                unregister()
-                unregister = undefined
-                logger.info?.(`[harden] 工具 ${TOOL_NAME} 已随配置关闭，从工具表摘除`)
-            }
-        }
-
-        syncRegistration()
-        jobCtx.on('settings/document-updated', () => syncRegistration())
+        // 开关交给平台的步级准入：关掉即不进声明、不可派发，不必自己记账与重算。
+        tools.register(definition, { when: isEnabled })
+        logger.info?.(
+            `[harden] 工具 ${TOOL_NAME} 已注册（沙箱升级=${escalationModes.length > 0 ? '开' : '关'}）`,
+        )
     })
 }

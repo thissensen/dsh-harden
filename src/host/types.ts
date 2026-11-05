@@ -42,7 +42,11 @@ export interface HardenConfig {
     contextCompaction?: boolean
     /** 规则「上下文自动压缩」：总开关打开时，压缩作用在哪些会话上。默认 `all`。 */
     compactionScope?: CompactionScope
-    /** 触发自动压缩的上下文 token 阈值（字符串，如 `200K`）。 */
+    /**
+     * 触发自动压缩的上下文 token 阈值：绝对写法（如 `200K`）或占模型上下文窗口的比例（如 `60%`）。
+     *
+     * 比例只认 1%~100%；绝对写法超过模型窗口的 90% 时按窗口 90% 算。默认 `200K`。
+     */
     compactionThreshold?: string
     /** 交给摘要模型的压缩指令；用户可改。 */
     compactionInstruction?: string
@@ -50,6 +54,13 @@ export interface HardenConfig {
     subagentAggregation?: boolean
     /** 规则「突破 PTC 120 秒限制」的开关。默认 false（见 config.ts 的 DEFAULT_PTC_BREAK_LIMIT）。 */
     ptcBreakLimit?: boolean
+    /**
+     * 模块九「旧认证 cookie 自动清理」的开关。默认 true（见 config.ts 的 DEFAULT_AUTH_COOKIE_SWEEP）。
+     *
+     * 管的是「页面加载时自动清掉本机旧 `dsh-auth-*`」这一条：关掉后清理端点一律空操作，
+     * 已签发的一堆死 cookie 会一路攒到请求头撑爆 Node 上限。
+     */
+    authCookieSweep?: boolean
 }
 
 /** settings 服务里本插件用到的部分。 */
@@ -111,11 +122,17 @@ export interface TokenMeasurementLike {
 /**
  * 平台 token 计量服务。
  *
- * `measure` 用 `totalTokens` 判阈值；`estimateMessage` 用于压缩后收缩校验。
+ * 本服务被用到三件事：`measure` 判阈值、`estimateMessage` 做压缩后收缩校验、
+ * `contextPressure` 读模型上下文窗口（比例阈值换算与绝对阈值夹取都要它）。
  */
 export interface TokenMeterService {
     measure(session: unknown, requestHeader?: unknown): TokenMeasurementLike
     estimateMessage(message: unknown): number
+    /**
+     * 最近一次请求的上下文压力与路由容量；窗口字段在适配器没有报容量时缺席。
+     * 平台实现是投影读取（同步），但只能在服务就绪后（监听器内）调。
+     */
+    contextPressure(session: unknown): { readonly contextWindow?: number }
 }
 
 /** 平台 LLM 服务（本插件只用到流式调用）。 */
@@ -220,6 +237,8 @@ export interface AgentLike {
     steer(message: unknown): void
     /** agent 的选项；压缩的摘要调用用它做 provider/model 的兜底来源。 */
     readonly options?: { readonly provider?: string; readonly model?: string }
+    /** 模型选择读取面。平台 `Agent.model` 必供；这里声明成可选，免得每处测试桩都补一个字段。 */
+    readonly model?: { current(): { readonly provider: string; readonly model: string } | undefined }
 }
 
 // ── 事件载荷（agent/turn-stopping）─────────────────────────────────────────
@@ -306,12 +325,17 @@ export interface AggregationAgentLike {
     followup(message: unknown): void
 }
 
-/** 平台的 agent 注册表服务（`ctx.agents`）：本项目只读这两个方法。 */
+/** 平台的 agent 注册表服务（`ctx.agents`）：本项目只读这三个方法。 */
 export interface AgentRegistryService {
     /** 按会话 id 取活跃 agent；不在时返回 undefined。 */
     get(id: string): AggregationAgentLike | undefined
     /** 全部活跃 agent（注册顺序）。 */
     list(): readonly AggregationAgentLike[]
+    /**
+     * 会话里记录的回合/步位置。`openTurnStartSeq === null` 表示当前没有打开的回合
+     * （据此判「有没有打开着的回合」不必再扫会话日志）。
+     */
+    turnBoundaryOf(session: SessionLike): { readonly openTurnStartSeq: number | null; readonly lastTurn: number }
 }
 
 /**

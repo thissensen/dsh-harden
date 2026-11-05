@@ -24,6 +24,7 @@
 import { createRequire } from 'node:module'
 import type {
     Ctx,
+    LlmFailureLike,
     Logger,
     RequestErrorAction,
     RequestErrorPayload,
@@ -38,8 +39,8 @@ import {
     NUDGE_TEXT,
     parseToolFailurePrefixes,
 } from './guard.js'
-import { readTurnSnapshot, type TurnSnapshot } from './step-reader.js'
-import { buildRetryEvents, matchesRetryTokens, takeRetrySlot, type RetryBudget } from './retry.js'
+import { mountTurnSnapshotMemory, readTurnSnapshot, type TurnSnapshot } from './step-reader.js'
+import { buildRetryEvents, matchesRetryTokens, takeRetrySlot, type RetryBudget, type RetryCoordinate } from './retry.js'
 import { mountApi, readSessionQuery, readTrustedHosts } from './api.js'
 import type { ConfigScope } from './api.js'
 import { mountJobBackground } from './job-background.js'
@@ -48,6 +49,7 @@ import { mountSubagentAggregation } from './subagent-aggregate.js'
 import { mountRetryIntercept } from './retry-intercept.js'
 import { mountPtcBudget } from './ptc-budget.js'
 import { SETTINGS_NAMESPACE } from './config.js'
+import { AUTH_COOKIE_SWEEP_THRESHOLD } from './shared-format.js'
 
 /** 平台按这个 id 认配置 schema（`Config` 是平台侧的约定名，见 config.ts）。 */
 export { Config } from './config.js'
@@ -85,6 +87,7 @@ export function apply(ctx: Ctx, config: unknown): void {
     const state: HardenState = { budgets: new WeakMap(), retryBudgets: new WeakMap() }
     const current: () => Required<HardenConfig> = () => readConfig(config)
 
+    mountTurnSnapshotMemory(ctx)
     mountTurnStoppingGuard(ctx, logger, state, current)
     mountRequestErrorGuard(ctx, logger, state, current)
 
@@ -100,6 +103,9 @@ export function apply(ctx: Ctx, config: unknown): void {
     )
     logger.info?.(`[harden] 规则「子代理通知聚合」= ${now.subagentAggregation ? '开' : '关'}`)
     logger.info?.(`[harden] 规则「突破 PTC 120 秒限制」= ${now.ptcBreakLimit ? '开' : '关'}`)
+    logger.info?.(
+        `[harden] 规则「旧认证 cookie 自动清理」= ${now.authCookieSweep ? '开' : '关'}（门槛 ${AUTH_COOKIE_SWEEP_THRESHOLD} 条）`,
+    )
 
     mountConfigApi(ctx, logger, config)
     mountContextCompaction(ctx, logger, () => current())
@@ -153,9 +159,9 @@ function mountConfigApi(ctx: Ctx, logger: Logger, config: unknown): void {
  * 有没有命中失败前缀」，H2 看「最后一步有没有正文」——不可能同时命中，所以不需要互斥标记
  * 或短路逻辑。合成一个监听器让收尾边界的异常边界只有一处。
  *
- * **为什么会话一回合只读一次。** 两条规则看的是同一份「最后一步」快照；旧实现各读一遍会话、
- * 各拼一遍正文，而默认配置下 H1 前缀为空、那次扫描纯属浪费。现在先算开关、再读一次快照，
- * 两条规则共用。
+ * **为什么读记忆而不是扫会话日志。** 旧实现每回合全量扫一遍会话事件（平台已把同步读取面标
+ * deprecated「新调用禁止」）；现在 `session/event` 观察者把本回合最后一条 assistant 消息记在模块级
+ * WeakMap 里（见 `mountTurnSnapshotMemory`），收尾时只查一次记忆，两条规则共用同一份快照。
  *
  * **为什么用 steer 而不是返回值。** 这个事件是 serial 模式，监听器没有 `next`；平台文档
  * 写明了反对收尾的唯一手段就是在监听器里调 `agent.steer(...)`——平台收尾前会重读收件箱，
@@ -181,7 +187,7 @@ function mountTurnStoppingGuard(
             const 前缀组 = parseToolFailurePrefixes(config.toolFailurePrefixes)
             const 是否判工具失败 = config.toolFailureGuard === true && 前缀组.length > 0
             const 是否判空回合 = config.emptyOutputGuard === true
-            // 两条都不判时连快照都不读：默认配置下 H1 前缀为空，这一步本来会白扫一次会话。
+            // 两条都不判时连记忆都不查：默认配置下 H1 前缀为空，没必要往下走。
             if (是否判工具失败 === false && 是否判空回合 === false) return
 
             const 快照 = readTurnSnapshot(payload.agent.session, payload.turn ?? 0)
@@ -252,7 +258,7 @@ function considerEmptyTurnSteer(
     const count = takeBudget(state, agent, turn)
 
     logger.info?.(
-        `[harden] 规则 H2 命中：turn=${turn}，steer 纠正消息（第 ${count} 次）`,
+        `[harden] 规则 H2 命中：turn=${turn} ${hit}，steer 纠正消息（第 ${count} 次）`,
     )
     // 只传暗号，理由同上（见 considerToolFailureSteer）。
     const summary = `nudge.emptyTurn|${count}`
@@ -302,7 +308,7 @@ function mountRequestErrorGuard(
  * @param state - 活状态（兜底重试记账）。
  * @param current - 配置读取器。
  * @param logger - 日志出口。
- * @returns 官方已决定重试就跟着走；否则视配置与本步剩余名额决定是否兜底重试。
+ * @returns 官方已决定重试就跟着走；否则视配置与本链剩余名额决定是否兜底重试。
  */
 function considerRetry(
     payloadRaw: unknown,
@@ -322,21 +328,30 @@ function considerRetry(
     if (matchesRetryTokens(payload.failure, config.networkRetryTokens) === false) return officialDecision
 
     const agent = payload.agent as unknown as object
-    const slot = takeRetrySlot(
-        state.retryBudgets,
-        agent,
-        payload.turn,
-        payload.step,
-        config.networkRetryCount,
-    )
+    // 载荷里没有 model（只有 provider），只能从 agent 的模型选择现取。取不到就记 '-'，不拿 provider
+    // 冒充：日志与 policyKey 里出现假 model 会让人以为路由切了；所有取不到的情况落在同一条链上。
+    const model = payload.agent.model?.current()?.model ?? '-'
+    const 坐标: RetryCoordinate = {
+        turn: payload.turn,
+        step: payload.step,
+        provider: payload.provider,
+        model,
+    }
+    const slot = takeRetrySlot(state.retryBudgets, agent, 坐标, config.networkRetryCount)
     if (slot === null) return officialDecision
 
     logger.info?.(
         `[harden] 规则 H3 命中：turn=${payload.turn} step=${payload.step} provider=${payload.provider} ` +
-            `code=${payload.failure?.code ?? '-'}，兜底重试（第 ${slot.count} 次）`,
+            `model=${model} code=${payload.failure?.code ?? '-'}，兜底重试（第 ${slot.count} 次）`,
     )
 
-    reportRetryToSession(payload, slot.retryId, slot.count, config.networkRetryCount)
+    reportRetryToSession(
+        payload,
+        slot.retryId,
+        slot.count,
+        config.networkRetryCount,
+        model,
+    )
 
     return { kind: 'retry' }
 }
@@ -351,14 +366,23 @@ function considerRetry(
  * @param retryId - 本 policy chain 的重试 id（由 `takeRetrySlot` 分配，同链复用）。
  * @param retry - 这是第几次兜底重试（从 1 起）。
  * @param maxRetries - 兜底次数上限。
+ * @param model - 本次重试用的模型名（编进 policyKey，换模型才是新链）。
  */
 function reportRetryToSession(
     payload: RequestErrorPayload,
     retryId: string,
     retry: number,
     maxRetries: number,
+    model: string,
 ): void {
-    const events = buildRetryEvents(payload, retryId, retry, maxRetries)
+    const 事件载荷: RetryCoordinate & { failure: LlmFailureLike } = {
+        turn: payload.turn,
+        step: payload.step,
+        provider: payload.provider,
+        model,
+        failure: payload.failure,
+    }
+    const events = buildRetryEvents(事件载荷, retryId, retry, maxRetries)
     payload.agent.session.append(events.scheduledType, events.scheduledData)
     payload.agent.session.append(events.startedType, events.startedData)
 }

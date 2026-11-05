@@ -16,7 +16,7 @@
   <a href="https://github.com/thissensen/dsh-harden">GitHub</a>
 </p>
 
-> **Status**: guard rules H1, H2 and H3 are all implemented; **all 368 tests pass (18 test files)**, typecheck is clean, and the build succeeds.
+> **Status**: guard rules H1, H2 and H3 are all implemented; **the whole test suite passes**, typecheck is clean, and the build succeeds.
 
 ## What it solves
 
@@ -33,6 +33,12 @@ dsh-harden attaches to key points in the agent lifecycle and catches these **sil
 
 In one sentence: **an explicit failure is fine; a silent stop is not.**
 
+## Compatibility
+
+- **DSH 0.2.2 or newer only**: tested on `dsh@0.2.2-rc.1`; do not install it on an older platform.
+- **Still on DSH 0.2.1? Keep using `0.0.3`**: that version stays on npm and will not be removed.
+- **No dual-track "use it if present, silently fall back if not"**: this release calls platform interfaces that only exist in 0.2.2, so it fails outright on older versions — the plugin does not probe the platform version and has no fallback path.
+
 ## Features
 
 - **Continue after a failed tool call** — when a tool call fails and the framework still treats the turn as complete, a note is injected so the model retries. (needs **Failure warning prefixes** filled in on the settings page, otherwise this rule stays off)
@@ -46,6 +52,7 @@ In one sentence: **an explicit failure is fine; a silent stop is not.**
 - **Aggregate subagent notices** — when several subagents finish in parallel, their completion notices are held back and delivered together as one message once every subagent is done, instead of waking the model one by one. Off by default.
 - **Lift the PTC program budget** — a settings toggle raises the default program budget of PTC-mode `run_code` programs from the platform's 120 seconds to the timer ceiling (about 24.8 days); turning it off or unloading the plugin restores the default. It applies to the main agent and subagents alike. **Off by default**: with a budget that large, a runaway program will not stop by itself.
 - **Automatic repair for broken subagent sessions** — fixes the case where a session suddenly refuses to open while subagents are running. The plugin corrects non-conforming retry events before they are stored; a light note appears at the end of the turn when a correction happens. Corrections are also recorded in the session log, so the note **still shows after a restart**. It is **always on and has no toggle**.
+- **Automatic cleanup of old auth cookies** — every time the UI opens, the old auth cookies piled up on the same address are deleted and only the one this page uses is kept; it acts only past 20 of them. Note that another DSH instance open at the same time (the web version, for example) gets signed out because its cookie is deleted, so it needs its launch link reopened. It only applies on local addresses such as `127.0.0.1` and `localhost`.
 
 ## Problem screenshots
 
@@ -125,19 +132,20 @@ dsh plugin --profile web add link:<absolute path to this repo>
 
 ## Settings
 
-The settings page lives under the "DSH Optimize" section and has **nine** cards:
+The settings page lives under the "DSH Optimize" section and carries these cards:
 
 | Card | Description |
 |---|---|
 | **Continue after a failed tool call** | Toggle. A swallowed tool-call failure that still ends the turn as "complete" causes a note to be injected so the model retries. Also has **Failure warning prefixes**: the fixed opening of the platform warning, matched against the start of the whole reply text (lines are **not** split), case-sensitive; if a prefix starts with ``<``, a paired in-text marker (opening + closing) in the reply also counts as a failure. **Empty by default — empty means rule H1 stays off.** Example: `⚠ Could not execute tool`. |
 | **Turn ends without a reply** | Toggle. A turn whose last step has only reasoning is pulled back for one more step. |
 | **Continue after a network interruption** | Toggle plus **Network retry count** (0–99 extra attempts after the official retries run out; 0 disables it) and **Failures that trigger a retry** (failure codes `SERVER` / `RATE_LIMIT` / `TIMEOUT` / `TRANSPORT` and HTTP statuses `502` / `429`; empty retries nothing). |
-| **Automatic context compaction** | Toggle plus **Compaction scope** (a dropdown: All / Main only / Subagents only — default All), **Trigger threshold** (e.g. `200K` / `1M` / `100000`; the plugin default is `200K`) and **Summary instruction** (the instruction sent to the model when a summary is generated). Once the session exceeds the threshold, an earlier stretch of history is condensed into a summary and the platform's own "context compacted" notice is shown. |
+| **Automatic context compaction** | Toggle plus **Compaction scope** (a dropdown: All / Main only / Subagents only — default All), **Trigger threshold** (either an absolute size such as `200K` / `1M` / `100000`, or a share of the model's context window such as `60%` — percentages run from 1% to 100%; the plugin default is `200K`. An absolute size is capped at 90% of the model window: anything larger counts as 90%) and **Summary instruction** (the instruction sent to the model when a summary is generated). Once the session exceeds the threshold, an earlier stretch of history is condensed into a summary and the platform's own "context compacted" notice is shown. |
 | **Background task tool** | Toggle. When on, the model can start background commands with `job_background` and manage them with `job_list` / `job_output` / `job_kill`. When off, the tool disappears. |
 | **Lift the PTC 120-second cap** | Toggle, **off by default**. When on, it raises the default program budget of PTC-mode `run_code` programs from 120 seconds to the platform timer ceiling (2147483647 ms, about 24.8 days), and it applies to both the main agent and subagents; turning it off or unloading the plugin restores the platform default. It touches this one budget only: the 600-second foreground cap of `gitbash` and the 600-second single-wait cap of `job_output` stay as they are. **With a budget this large there is no automatic backstop** — a runaway program will hardly ever stop by itself, so you have to stop it manually; it is not a security boundary either (editing the profile, another plugin, or an outside process can all bypass it). |
 | **Aggregate subagent notices** | Toggle, **off by default**. When several subagents finish in parallel, their completion notices are held back and delivered together as one message once every subagent is done, instead of waking the model one by one. |
 | **Automatic repair for broken subagent sessions** | **No toggle — always on.** When the platform is about to store a non-conforming retry event, the plugin corrects it before it is written, so the session never becomes unopenable. A light note appears at the end of the turn when a correction happens; corrections are recorded in the session log, so it **still shows after a restart**. |
 | **Repair corrupted sessions** | Scan button. Scans every session log and repairs the known kinds of corruption, so a history that refuses to open becomes usable again. |
+| **Automatic cleanup of old auth cookies** | Toggle, **on by default**. Every time the UI opens, if this address carries more than 20 auth cookies, the old ones are deleted and only the current page's one is kept; below 20 it does nothing. **Another DSH instance open at the same time (the web version, for example) gets signed out because its cookie is deleted — reopen its launch link.** With this switch off, the desktop app collects one more cookie per launch, and once there are about 68 of them the browser request header exceeds its limit and the page stops loading. It only applies on local addresses such as `127.0.0.1` and `localhost`; elsewhere the card shows "Not active in this environment". |
 
 The header also carries a **"Check for updates"** button: it goes through the plugin's own host endpoint, which queries npm for the latest version (the result is cached for 5 minutes). When a newer version exists the button shows the version number right away and opens the npm page when clicked; when offline or behind a proxy it shows "Update check failed; click to retry".
 
@@ -150,7 +158,7 @@ pnpm install
 node scripts/link-deps.mjs    # link host packages into this project's node_modules
 pnpm build                     # tsc (host) + vite (client)
 pnpm typecheck                 # type check only
-pnpm test                      # vitest, 368 tests (18 test files)
+pnpm test                      # vitest, all tests in tests/ must pass
 ```
 
 ## Design

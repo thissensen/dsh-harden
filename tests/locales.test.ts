@@ -52,6 +52,11 @@ describe('zh / en 两份字典', () => {
             'rule.ptcBreakLimit.desc',
             'rule.ptcBreakLimit.help',
             'api.ptcBreakLimitNotBoolean',
+            'rule.authCookieSweep.title',
+            'rule.authCookieSweep.desc',
+            'rule.authCookieSweep.help',
+            'rule.authCookieSweep.inactive',
+            'api.authCookieSweepNotBoolean',
         ]
 
         for (const 词条 of 新词条组) {

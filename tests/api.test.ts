@@ -1,7 +1,7 @@
 /**
  * HTTP 端点（`src/host/api.ts`）的单元测试。
  *
- * **被测对象是本插件唯一的对外暴露面，也是唯一的安全边界**：读 / 写两道围栏、十二个字段的端点校验
+ * **被测对象是本插件唯一的对外暴露面，也是唯一的安全边界**：读 / 写两道围栏、十三个字段的端点校验
  * 与错误码、请求体读取的 400 / 413、暗号参数的竖线转义、逐文件容错的四类计数，以及页头「检查更新」
  * 用的只读版本端点。这些口径此前只有真机手工 curl 过三态（B-6），这里补回归网。
  *
@@ -29,7 +29,7 @@ import {
     RETRY_COUNT_MIN,
     RETRY_TOKENS_MAX_LENGTH,
     TOOL_FAILURE_PREFIXES_MAX_LENGTH,
-    parseTokenCount,
+    解析压缩阈值,
 } from '../src/host/shared-format.js'
 import type { Ctx, HardenConfig } from '../src/host/types.js'
 
@@ -63,7 +63,7 @@ vi.mock('../src/host/session-repair.js', async (importOriginal) => {
     }
 })
 
-/** 十二个可写字段各取一个合法值：合法请求体与「patch 字段齐全」断言共用这一份。 */
+/** 十三个可写字段各取一个合法值：合法请求体与「patch 字段齐全」断言共用这一份。 */
 const 合法配置: Required<HardenConfig> = {
     toolFailureGuard: true,
     toolFailurePrefixes: '工具调用失败',
@@ -77,6 +77,7 @@ const 合法配置: Required<HardenConfig> = {
     compactionScope: 'all',
     compactionThreshold: '200K',
     compactionInstruction: '压一压',
+    authCookieSweep: true,
 }
 
 /** 字段校验表结构：字段名 + 非法取值 + 期望错误码。 */
@@ -86,7 +87,7 @@ interface 字段校验行 {
     期望错误码: string
 }
 
-/** 十二个字段各自的非法取值（顺序与端点里的校验顺序一致）。 */
+/** 十三个字段各自的非法取值（顺序与端点里的校验顺序一致）。 */
 const 字段校验表: 字段校验行[] = [
     { 字段名: 'toolFailureGuard', 非法值: 'yes', 期望错误码: 'api.toolFailureGuardNotBoolean' },
     { 字段名: 'emptyOutputGuard', 非法值: 'true', 期望错误码: 'api.emptyOutputGuardNotBoolean' },
@@ -100,6 +101,7 @@ const 字段校验表: 字段校验行[] = [
     { 字段名: 'compactionScope', 非法值: 'both', 期望错误码: 'api.compactionScopeInvalid' },
     { 字段名: 'compactionThreshold', 非法值: 'abc', 期望错误码: 'api.compactionThresholdInvalid' },
     { 字段名: 'compactionInstruction', 非法值: 10000, 期望错误码: 'api.compactionInstructionInvalid' },
+    { 字段名: 'authCookieSweep', 非法值: 'yes', 期望错误码: 'api.authCookieSweepNotBoolean' },
 ]
 
 /** 字段名 → 错误码（长度边界用例复用同一张表，不再写第二份字面量）。 */
@@ -386,7 +388,7 @@ describe('POST /config 字段校验', () => {
         expect(JSON.parse(响应.body)).toEqual({ ok: false, error: 'api.networkRetryCountInvalid' })
     })
 
-    it('十二个字段全合法 ⇒ 200，且把十二个字段一起写给 settings', async () => {
+    it('十三个字段全合法 ⇒ 200，且把十三个字段一起写给 settings', async () => {
         const { scope, 写入补丁组 } = 造作用域桩(合法配置)
         const handler = 挂载端点(造依赖({ getScope: () => scope }))
         const 响应 = await 调端点(handler, 造写请求桩(合法配置))
@@ -395,7 +397,7 @@ describe('POST /config 字段校验', () => {
         expect(JSON.parse(响应.body)).toEqual({ ok: true })
         expect(写入补丁组).toEqual([合法配置])
         expect(Object.keys(写入补丁组[0]).sort()).toEqual(Object.keys(合法配置).sort())
-        expect(Object.keys(合法配置)).toHaveLength(12)
+        expect(Object.keys(合法配置)).toHaveLength(13)
     })
 
     it('设置服务拒写 ⇒ 400 api.writeFailed|…，且原因里的竖线被换成斜杠', async () => {
@@ -421,18 +423,21 @@ describe('端点校验与共享口径同一份', () => {
     const 阈值表: { 阈值文本: string; 期望通过: boolean }[] = [
         { 阈值文本: '200K', 期望通过: true },
         { 阈值文本: '100000', 期望通过: true },
+        { 阈值文本: '60%', 期望通过: true },
         { 阈值文本: '1.5K', 期望通过: false },
         { 阈值文本: '0', 期望通过: false },
+        { 阈值文本: '0%', 期望通过: false },
+        { 阈值文本: '101%', 期望通过: false },
         { 阈值文本: 'abc', 期望通过: false },
     ]
 
     for (const 阈值行 of 阈值表) {
-        it(`compactionThreshold = ${阈值行.阈值文本} ⇒ 与共享解析 parseTokenCount 裁决一致`, async () => {
+        it(`compactionThreshold = ${阈值行.阈值文本} ⇒ 与共享解析 解析压缩阈值 裁决一致`, async () => {
             const handler = 挂载端点(造就绪依赖())
             const 响应 = await 调端点(handler, 造写请求桩({ ...合法配置, compactionThreshold: 阈值行.阈值文本 }))
 
             // 期望值就地由共享实现算出：端点（或面板）自己另写一份解析，这里立刻变红。
-            expect(parseTokenCount(阈值行.阈值文本) !== null).toBe(阈值行.期望通过)
+            expect(解析压缩阈值(阈值行.阈值文本) !== null).toBe(阈值行.期望通过)
             expect(响应.statusCode).toBe(阈值行.期望通过 ? 200 : 400)
             if (阈值行.期望通过 === false) expect(JSON.parse(响应.body).error).toBe('api.compactionThresholdInvalid')
         })
@@ -588,6 +593,119 @@ describe('POST /repair-sessions 逐文件容错', () => {
             { filePath: 抛错路径, status: 'read-failed', reason: '未预期的失败：平台包加载炸了' },
         ])
         expect(会话修复桩.修复调用组).toEqual([通过路径, 已修路径, 抛错路径])
+    })
+})
+
+describe('POST /sweep-auth-cookies', () => {
+    /** 当前页面那条认证 cookie 的名字：Host = 127.0.0.1:51234 时平台现算出来的值（已核对）。 */
+    const 当前认证Cookie名 = 'dsh-auth-IA65NERIqHMAlmsoa_nqfpvQAaP9M4M2nZaH7yYnF7k'
+    /** 本机回环 Host（桌面端的真实形态：每次启动换端口，用例里钉一个固定端口好算名字）。 */
+    const 回环Host = '127.0.0.1:51234'
+    /** 本端点的写请求路径。 */
+    const 清理路径 = '/api/dsh-harden/sweep-auth-cookies'
+
+    /**
+     * 造一段 Cookie 头：共 `总条数` 条认证 cookie，第一条是当前页面那条。
+     *
+     * **名字必须是纯 ASCII**：平台的认证 cookie 形态是 `dsh-auth-<base64url>`，清理口径按这个字符集
+     * 卡名字，中文名会被当成「不是认证 cookie」直接跳过——用例就白写了（条数永远为 0）。
+     */
+    function 造认证Cookie头(总条数: number): string {
+        const 名字组 = [当前认证Cookie名]
+        for (let 序号 = 1; 名字组.length < 总条数; 序号 += 1) {
+            名字组.push(`dsh-auth-old${序号}`)
+        }
+
+        return 名字组.map((名字) => `${名字}=v`).join('; ')
+    }
+
+    /** 造一个本端点的写请求桩（体是空的 JSON 对象：端点不读内容，只负责把流读掉）。 */
+    function 造清理请求桩(头组: Record<string, string>): IncomingMessage {
+        return 造写请求桩({}, 头组, 清理路径)
+    }
+
+    it('缺 x-dsh-harden 头 ⇒ 403 api.forbiddenMutation', async () => {
+        const handler = 挂载端点(造就绪依赖())
+        const 请求 = 造带体请求桩(
+            'POST',
+            清理路径,
+            '{}',
+            { 'content-type': 'application/json' },
+        )
+        const 响应 = await 调端点(handler, 请求)
+
+        expect(响应.statusCode).toBe(403)
+        expect(JSON.parse(响应.body)).toEqual({ ok: false, error: 'api.forbiddenMutation' })
+    })
+
+    it('content-type 不是 JSON ⇒ 415 api.contentTypeInvalid', async () => {
+        const handler = 挂载端点(造就绪依赖())
+        const 响应 = await 调端点(handler, 造清理请求桩({ 'content-type': 'text/plain' }))
+
+        expect(响应.statusCode).toBe(415)
+        expect(JSON.parse(响应.body)).toEqual({ ok: false, error: 'api.contentTypeInvalid' })
+    })
+
+    it('Host 是信任清单里的外部地址 ⇒ 200 清理数 0，一条 Set-Cookie 都不写（不能踢掉别人的会话）', async () => {
+        const 外部Host = 'harden.example:3080'
+        const { scope } = 造作用域桩(合法配置)
+        const handler = 挂载端点(造依赖({ getScope: () => scope, trustedHosts: [外部Host] }))
+        // cookie 故意给到 21 条：门槛已经越过，能拦住它的只剩「非回环」这一条判据。
+        const 响应 = await 调端点(handler, 造清理请求桩({ host: 外部Host, cookie: 造认证Cookie头(21) }))
+
+        expect(响应.statusCode).toBe(200)
+        expect(JSON.parse(响应.body)).toEqual({ ok: true, 清理数: 0 })
+        expect(响应.headers['set-cookie']).toBeUndefined()
+    })
+
+    it('开关关掉 ⇒ 200 清理数 0，无 Set-Cookie（用户的止损开关优先于门槛）', async () => {
+        const { scope } = 造作用域桩({ ...合法配置, authCookieSweep: false })
+        const handler = 挂载端点(造依赖({ getScope: () => scope }))
+        const 响应 = await 调端点(handler, 造清理请求桩({ host: 回环Host, cookie: 造认证Cookie头(21) }))
+
+        expect(响应.statusCode).toBe(200)
+        expect(JSON.parse(响应.body)).toEqual({ ok: true, 清理数: 0 })
+        expect(响应.headers['set-cookie']).toBeUndefined()
+    })
+
+    it('Cookie 头刚好 20 条 ⇒ 清理数 0（门槛是「严格大于」，没越线就不给每个响应挂一堆头）', async () => {
+        const handler = 挂载端点(造就绪依赖())
+        const 响应 = await 调端点(handler, 造清理请求桩({ host: 回环Host, cookie: 造认证Cookie头(20) }))
+
+        expect(响应.statusCode).toBe(200)
+        expect(JSON.parse(响应.body)).toEqual({ ok: true, 清理数: 0 })
+        expect(响应.headers['set-cookie']).toBeUndefined()
+    })
+
+    it('Cookie 头 21 条 ⇒ 200 清理数 20，且绝不删当前页面那条', async () => {
+        const handler = 挂载端点(造就绪依赖())
+        const 响应 = await 调端点(handler, 造清理请求桩({ host: 回环Host, cookie: 造认证Cookie头(21) }))
+        const 头组 = 响应.headers['set-cookie']
+
+        expect(响应.statusCode).toBe(200)
+        expect(JSON.parse(响应.body)).toEqual({ ok: true, 清理数: 20 })
+        // 一个 cookie 一条独立响应头 ⇒ 值必须是字符串数组；拼成一条会被浏览器当成一个畸形 cookie。
+        expect(Array.isArray(头组)).toBe(true)
+        expect(头组).toHaveLength(20)
+        expect((头组 as string[]).some((值) => 值.startsWith(`${当前认证Cookie名}=`))).toBe(false)
+    })
+
+    it('设置服务未就绪 ⇒ 503 api.settingsNotReady，无 Set-Cookie（不假装清过）', async () => {
+        const handler = 挂载端点(造依赖())
+        const 响应 = await 调端点(handler, 造清理请求桩({ host: 回环Host, cookie: 造认证Cookie头(21) }))
+
+        expect(响应.statusCode).toBe(503)
+        expect(JSON.parse(响应.body)).toEqual({ ok: false, error: 'api.settingsNotReady' })
+        expect(响应.headers['set-cookie']).toBeUndefined()
+    })
+
+    it('Cookie 头畸形（`;;=x`）⇒ 200 清理数 0，不抛', async () => {
+        const handler = 挂载端点(造就绪依赖())
+        const 响应 = await 调端点(handler, 造清理请求桩({ host: 回环Host, cookie: ';;=x' }))
+
+        expect(响应.statusCode).toBe(200)
+        expect(JSON.parse(响应.body)).toEqual({ ok: true, 清理数: 0 })
+        expect(响应.headers['set-cookie']).toBeUndefined()
     })
 })
 

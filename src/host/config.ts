@@ -62,7 +62,11 @@ export const COMPACTION_SCOPES = ['all', 'main', 'subagent'] as const satisfies 
  */
 export const DEFAULT_COMPACTION_SCOPE: CompactionScope = 'all'
 
-/** 默认值：触发自动压缩的上下文 token 阈值（字符串写法，认 1M / 200K / 100000）。 */
+/**
+ * 默认值：触发自动压缩的上下文 token 阈值（字符串写法，认 1M / 200K / 100000）。
+ *
+ * 也认 `60%` 这种占模型上下文窗口的比例（1%~100%）；绝对值超过窗口 90% 时按窗口 90% 算。
+ */
 export const DEFAULT_COMPACTION_THRESHOLD = '200K'
 
 /**
@@ -121,6 +125,15 @@ export const DEFAULT_SUBAGENT_AGGREGATION = false
  */
 export const DEFAULT_PTC_BREAK_LIMIT = false
 
+/**
+ * 默认值：模块九「旧认证 cookie 自动清理」的开关。
+ *
+ * 默认**开**——它是止损开关，不是增值功能：平台每次启动换端口就多签发一条永不复用的
+ * `dsh-auth-*` cookie（HTTP 下 cookie 不按端口隔离），不清理就会攒到请求头撑爆 Node
+ * 16 KB 上限、页面 431 打不开。用户可以在设置页把它关掉；关了之后清理端点一律空操作。
+ */
+export const DEFAULT_AUTH_COOKIE_SWEEP = true
+
 /** 平台按这个名字认配置 schema（`Config = { … }` 是平台侧的约定名）。 */
 export const Config = z.object({
     toolFailureGuard: z.boolean().default(DEFAULT_TOOL_FAILURE_GUARD).volatile(),
@@ -135,6 +148,7 @@ export const Config = z.object({
     compactionInstruction: z.string().default(DEFAULT_COMPACTION_INSTRUCTION).volatile(),
     subagentAggregation: z.boolean().default(DEFAULT_SUBAGENT_AGGREGATION).volatile(),
     ptcBreakLimit: z.boolean().default(DEFAULT_PTC_BREAK_LIMIT).volatile(),
+    authCookieSweep: z.boolean().default(DEFAULT_AUTH_COOKIE_SWEEP).volatile(),
 })
 
 /**
@@ -163,6 +177,7 @@ export function readConfig(raw: unknown): Required<HardenConfig> {
         compactionInstruction: unwrapField(obj.compactionInstruction, DEFAULT_COMPACTION_INSTRUCTION, 'string'),
         subagentAggregation: unwrapField(obj.subagentAggregation, DEFAULT_SUBAGENT_AGGREGATION, 'boolean'),
         ptcBreakLimit: unwrapField(obj.ptcBreakLimit, DEFAULT_PTC_BREAK_LIMIT, 'boolean'),
+        authCookieSweep: unwrapField(obj.authCookieSweep, DEFAULT_AUTH_COOKIE_SWEEP, 'boolean'),
     }
 }
 
@@ -181,6 +196,7 @@ export function defaultConfig(): Required<HardenConfig> {
         compactionInstruction: DEFAULT_COMPACTION_INSTRUCTION,
         subagentAggregation: DEFAULT_SUBAGENT_AGGREGATION,
         ptcBreakLimit: DEFAULT_PTC_BREAK_LIMIT,
+        authCookieSweep: DEFAULT_AUTH_COOKIE_SWEEP,
     }
 }
 

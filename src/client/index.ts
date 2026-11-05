@@ -29,6 +29,7 @@
 
 import { createElement } from 'react'
 import type { ReactElement } from 'react'
+import { 触发旧认证Cookie清理 } from './auth-cookie-sweep'
 import { en, LOCALE_NS, translateZh, zh } from './locales'
 import type { PlatformTranslate } from './locales'
 import { NudgeRow } from './parts/nudge-row'
@@ -313,6 +314,11 @@ export const inject = ['slots', 'locale', 'uiConversation']
  * @param ctx - client 根上下文。
  */
 export function apply(ctx: ClientContext): void {
+    // 页面一加载就把本机攒下来的旧认证 cookie 清一次：桌面端每次启动换端口，不清就会攒到
+    // 请求头撑爆上限、页面直接打不开。刻意不 await：本机端口抽风时不能把整份 client 插件的
+    // 激活（设置页 + 三条提示行）压在一次 HTTP 往返上。
+    void 触发旧认证Cookie清理()
+
     ctx.effect(() => ctx.locale.register(LOCALE_NS, { zh, en }), 'harden: locale dictionaries')
 
     const t = ctx.locale.bind(LOCALE_NS)

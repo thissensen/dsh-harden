@@ -258,7 +258,7 @@ describe('写入透传', () => {
     it('项目自己 H3 形状的合法重试链（policyKey harden-fallback / delayMs 0 / maxRetries 5 / 序号 1..n）不被改写', async () => {
         const { 会话, 落盘组 } = await 装会话('合法链-1')
         const 链路覆盖 = {
-            policyKey: '["harden-fallback"]',
+            policyKey: '["harden-fallback","deepseek-v4"]',
             delayMs: 0,
             maxRetries: 5,
             failure: { code: 'SERVER' },
@@ -468,7 +468,7 @@ describe('拦截记录落日志（原 append 返回之后）', () => {
 
     it('没发生改写（合法链）时零调用', async () => {
         const 桩 = await 装会话('日志记录-未归一-1')
-        const 合法覆盖 = { policyKey: '["harden-fallback"]', delayMs: 0, maxRetries: 5 }
+        const 合法覆盖 = { policyKey: '["harden-fallback","deepseek-v4"]', delayMs: 0, maxRetries: 5 }
 
         桩.会话.append('llm/retry', 重试数据('h3-链', 1, 合法覆盖))
         桩.会话.append('llm/retry', 重试数据('h3-链', 2, 合法覆盖))

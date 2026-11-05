@@ -2,8 +2,11 @@
  * 规则 H1（工具调用失败被吞）与 H2（回合无正文收尾）判定逻辑的持久化测试。
  *
  * 被测对象是 `src/host/guard.ts` 导出的 `detectSilentToolFailure()`（H1）与
- * `detectEmptyTurnEnd()`（H2）：入参是 `step-reader.ts` 的回合快照（一回合一读），
- * 命中返回说明文本，未命中返回 null。快照读取与前缀切分各自有用例，接线与旧断言一一对应。
+ * `detectEmptyTurnEnd()`（H2）：入参是 `step-reader.ts` 的纯投影 `投影回合快照()` 造出的回合快照
+ * （不碰会话、不碰记忆），命中返回说明文本，未命中返回 null。
+ *
+ * **哪一步的消息算「最后一步」不在这里测。** 那是回合消息记忆的职责（取步号最大的、同一步后者胜、
+ * 别的回合不算），用例在 `index.test.ts`。这里只钉判定本身。
  *
  * H1 的判据是「整段正文 trim 后匹配用户配置的前缀开头」（旧版依赖平台警告文案、
  * reasoning 调用意图与逐行匹配的判据已废弃，对应用例一并删除）。
@@ -12,27 +15,16 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import type { MessageBlock, SessionEventLike, SessionLike } from '../src/host/types.js'
+import type { MessageBlock } from '../src/host/types.js'
 import {
     detectEmptyTurnEnd,
     detectSilentToolFailure,
     parseToolFailurePrefixes,
 } from '../src/host/guard.js'
-import { readTurnSnapshot } from '../src/host/step-reader.js'
+import { 投影回合快照 } from '../src/host/step-reader.js'
 
-/** 固定的回合号与最后一步步号——每条用例都在同一坐标上判定。 */
-const TURN = 3
+/** 固定的最后一步步号——每条用例都在同一步上判定（回合号只有记忆用得上）。 */
 const LAST_STEP = 4
-
-/** 构造只提供 `snapshotEvents()` 的会话桩（`append` 是会话面的必填成员，这里不会被调用）。 */
-function makeSession(events: readonly SessionEventLike[]): SessionLike {
-    return { snapshotEvents: () => events, append: () => undefined }
-}
-
-/** 构造一条 `assistant/message` 事件。 */
-function assistantEvent(step: number, content: readonly MessageBlock[]): SessionEventLike {
-    return { type: 'assistant/message', data: { turn: TURN, step, message: { content } } }
-}
 
 /** 构造一个 reasoning 内容块。 */
 function reasoning(text: string): MessageBlock {
@@ -47,10 +39,9 @@ function text(text: string): MessageBlock {
 /** 一条典型的平台工具失败警告（放在 text 块里）。 */
 const WARNING_LINE = '⚠ Could not execute tool(s): "run_code": required field "code" is missing'
 
-/** 用「本回合最后一步只有这一条 assistant/message」的会话跑一次 H1 判定。 */
+/** 用「最后一步只有这一条 assistant 消息」的快照跑一次 H1 判定。 */
 function detect(content: readonly MessageBlock[], prefixes: string): string | null {
-    const session = makeSession([assistantEvent(LAST_STEP, content)])
-    return detectSilentToolFailure(readTurnSnapshot(session, TURN), parseToolFailurePrefixes(prefixes))
+    return detectSilentToolFailure(投影回合快照({ content }, LAST_STEP), parseToolFailurePrefixes(prefixes))
 }
 
 describe('detectSilentToolFailure', () => {
@@ -122,55 +113,35 @@ describe('detectSilentToolFailure', () => {
         })
 
         it('本回合没有对应的 assistant/message 事件时不拦', () => {
-            const session = makeSession([
-                { type: 'turn/start', data: { turn: TURN } },
-                assistantEvent(LAST_STEP + 1, [text(WARNING_LINE)]),
-            ])
-            const snapshot = readTurnSnapshot(session, TURN + 1)
-
-            expect(detectSilentToolFailure(snapshot, parseToolFailurePrefixes('⚠ Could not execute tool'))).toBeNull()
-        })
-
-        it('session.snapshotEvents() 抛异常时不向外抛，按未命中处理', () => {
-            const session: SessionLike = {
-                snapshotEvents: () => {
-                    throw new Error('会话日志读取失败')
-                },
-                append: () => undefined,
-            }
-            const snapshot = readTurnSnapshot(session, TURN)
-
-            expect(detectSilentToolFailure(snapshot, parseToolFailurePrefixes('⚠ Could not execute tool'))).toBeNull()
+            // 记忆里没有本回合的消息时读快照得 null（记忆侧见 index.test.ts），H1 直接放行。
+            expect(detectSilentToolFailure(null, parseToolFailurePrefixes('⚠ Could not execute tool'))).toBeNull()
         })
     })
 })
 
 describe('detectEmptyTurnEnd', () => {
-    /** 用「本回合只有这些 assistant/message 事件」的会话跑一次 H2 判定。 */
-    function detectTurn(events: readonly SessionEventLike[], turn: number): string | null {
-        return detectEmptyTurnEnd(readTurnSnapshot(makeSession(events), turn))
+    /** 用「最后一步就是这一条 assistant 消息」的快照跑一次 H2 判定。 */
+    function detectTurn(content: readonly MessageBlock[], step = LAST_STEP): string | null {
+        return detectEmptyTurnEnd(投影回合快照({ content }, step))
     }
 
     it('命中：最后一步只有 reasoning，没有正文也没有工具调用', () => {
-        const result = detectTurn([assistantEvent(LAST_STEP, [reasoning('让我想想这个问题')])], TURN)
+        const result = detectTurn([reasoning('让我想想这个问题')])
 
         expect(result).not.toBeNull()
         expect(result).toContain(String(LAST_STEP))
     })
 
     it('命中：多步时只看最后一步，前面有正文不算数', () => {
-        const result = detectTurn([
-            assistantEvent(LAST_STEP, [text('我先说明一下计划。')]),
-            assistantEvent(LAST_STEP + 1, [reasoning('计划已经想清楚了')]),
-        ], TURN)
+        // 挑哪一步由记忆决定（用例在 index.test.ts）；这里钉投影：说明里回显的就是传进来的那一步。
+        const result = detectTurn([reasoning('计划已经想清楚了')], LAST_STEP + 1)
 
         expect(result).not.toBeNull()
+        expect(result).toContain(`第 ${LAST_STEP + 1} 步`)
     })
 
     it('放行：最后一步有实质正文', () => {
-        const result = detectTurn([
-            assistantEvent(LAST_STEP, [reasoning('想完了'), text('任务完成')]),
-        ], TURN)
+        const result = detectTurn([reasoning('想完了'), text('任务完成')])
 
         expect(result).toBeNull()
     })
@@ -181,43 +152,23 @@ describe('detectEmptyTurnEnd', () => {
             { type: 'tool-call', id: 'call_1', name: 'run_code' },
         ]
 
-        expect(detectTurn([assistantEvent(LAST_STEP, content)], TURN)).toBeNull()
+        expect(detectTurn(content)).toBeNull()
     })
 
     it('放行：最后一步既无 reasoning 也无正文的空消息', () => {
-        expect(detectTurn([assistantEvent(LAST_STEP, [])], TURN)).toBeNull()
+        expect(detectTurn([])).toBeNull()
     })
 
     it('放行：本回合没有任何 assistant/message 事件', () => {
-        const events: SessionEventLike[] = [{ type: 'turn/start', data: { turn: TURN } }]
-
-        expect(detectTurn(events, TURN)).toBeNull()
+        // 记忆里没有本回合的消息时读快照得 null（记忆侧见 index.test.ts）。
+        expect(detectEmptyTurnEnd(null)).toBeNull()
     })
 
-    it('放行：只有别的回合的消息，不跨回合误判', () => {
-        const events = [assistantEvent(LAST_STEP, [reasoning('上一回合的思考')])]
+    it('放行：最后一条消息里正文在思考之后', () => {
+        // 同一步多条时后者胜由记忆负责（用例在 index.test.ts）；这里钉判定读的是拿到的那条消息。
+        const result = detectTurn([reasoning('再想'), text('说清楚了')])
 
-        expect(detectTurn(events, TURN + 1)).toBeNull()
-    })
-
-    it('放行：同一步的正文块在 reasoning 之后，取该步最后一条消息', () => {
-        const events = [
-            assistantEvent(LAST_STEP, [reasoning('先想')]),
-            assistantEvent(LAST_STEP, [reasoning('再想'), text('说清楚了')]),
-        ]
-
-        expect(detectTurn(events, TURN)).toBeNull()
-    })
-
-    it('session.snapshotEvents() 抛异常时按未命中处理', () => {
-        const session: SessionLike = {
-            snapshotEvents: () => {
-                throw new Error('会话日志读取失败')
-            },
-            append: () => undefined,
-        }
-
-        expect(detectEmptyTurnEnd(readTurnSnapshot(session, TURN))).toBeNull()
+        expect(result).toBeNull()
     })
 })
 
@@ -282,74 +233,29 @@ describe('detectSilentToolFailure 兜底：前缀以尖括号开头时按行内�
     })
 })
 
-describe('readTurnSnapshot', () => {
-    it('取该回合里步号最大的那条消息', () => {
-        const session = makeSession([
-            assistantEvent(LAST_STEP, [text('早一步')]),
-            assistantEvent(LAST_STEP + 2, [text('最后一步')]),
-            assistantEvent(LAST_STEP + 1, [text('中间一步')]),
-        ])
-        const snapshot = readTurnSnapshot(session, TURN)
-
-        expect(snapshot?.step).toBe(LAST_STEP + 2)
-        expect(snapshot?.wholeText).toBe('最后一步')
-    })
-
-    it('同一步出现多条消息时后者胜', () => {
-        const session = makeSession([
-            assistantEvent(LAST_STEP, [reasoning('先想'), text('旧正文')]),
-            assistantEvent(LAST_STEP, [text('新正文')]),
-        ])
-        const snapshot = readTurnSnapshot(session, TURN)
-
-        expect(snapshot?.wholeText).toBe('新正文')
-    })
-
+describe('投影回合快照', () => {
     it('正文与思考各自按换行拼接后再 trim（不是先 trim 再拼）', () => {
-        const session = makeSession([
-            assistantEvent(LAST_STEP, [
-                text('  第一段  '),
-                text('第二段'),
-                reasoning('  想来想去  '),
-                reasoning('再想一层'),
-            ]),
-        ])
-        const snapshot = readTurnSnapshot(session, TURN)
+        const 内容组: readonly MessageBlock[] = [
+            text('  第一段  '),
+            text('第二段'),
+            reasoning('  想来想去  '),
+            reasoning('再想一层'),
+        ]
+        const snapshot = 投影回合快照({ content: 内容组 }, LAST_STEP)
 
-        expect(snapshot?.wholeText).toBe('第一段  \n第二段')
-        expect(snapshot?.wholeReasoning).toBe('想来想去  \n再想一层')
+        expect(snapshot.step).toBe(LAST_STEP)
+        expect(snapshot.wholeText).toBe('第一段  \n第二段')
+        expect(snapshot.wholeReasoning).toBe('想来想去  \n再想一层')
     })
 
     it('有 tool-call 块时 hasToolCall 为 true', () => {
-        const session = makeSession([
-            assistantEvent(LAST_STEP, [
-                text('先说明'),
-                { type: 'tool-call', id: 'call_1', name: 'run_code' },
-            ]),
-        ])
-        const snapshot = readTurnSnapshot(session, TURN)
+        const 内容组: readonly MessageBlock[] = [
+            text('先说明'),
+            { type: 'tool-call', id: 'call_1', name: 'run_code' },
+        ]
+        const snapshot = 投影回合快照({ content: 内容组 }, LAST_STEP)
 
-        expect(snapshot?.hasToolCall).toBe(true)
-    })
-
-    it('该回合没有 assistant/message 时返回 null', () => {
-        const session = makeSession([
-            { type: 'turn/start', data: { turn: TURN } },
-            assistantEvent(LAST_STEP, [text('这是本回合的消息')]),
-        ])
-
-        expect(readTurnSnapshot(session, TURN + 1)).toBeNull()
-    })
-
-    it('session.snapshotEvents() 抛异常时返回 null', () => {
-        const session: SessionLike = {
-            snapshotEvents: () => {
-                throw new Error('会话日志读取失败')
-            },
-            append: () => undefined,
-        }
-
-        expect(readTurnSnapshot(session, TURN)).toBeNull()
+        expect(snapshot.hasToolCall).toBe(true)
     })
 })
 

@@ -78,9 +78,9 @@ export const zh = {
     'field.compactionThreshold.title': '触发阈值',
     'field.compactionThreshold.desc': '上下文涨到这个量就开始压缩',
     'field.compactionThreshold.help':
-        '认 1M / 200K / 100000 这类写法：K 等于 1000、M 等于 1000000，不区分大小写。必须是正整数。',
+        '两种写法：绝对 token 数（1M / 200K / 100000，K 等于 1000、M 等于 1000000，不区分大小写，必须是正整数）；或占模型上下文窗口的比例（60%，取 1%~100%）。绝对写法会被模型窗口的 90% 夹住。',
     'field.compactionThreshold.placeholder': '200K',
-    'field.compactionThreshold.invalid': '阈值格式不对，请填类似 200K 或 100000 的值',
+    'field.compactionThreshold.invalid': '阈值格式不对，请填 200K、100000 或 60% 这类值',
 
     'field.compactionInstruction.title': '摘要指令',
     'field.compactionInstruction.desc': '生成摘要时发给模型的指令',
@@ -106,9 +106,10 @@ export const zh = {
     'api.subagentAggregationNotBoolean': 'subagentAggregation 必须是布尔值',
     'api.contextCompactionNotBoolean': 'contextCompaction 必须是布尔值',
     'api.compactionScopeInvalid': 'compactionScope 必须是 all、main 或 subagent',
-    'api.compactionThresholdInvalid': 'compactionThreshold 必须是能解析成正整数的字符串',
+    'api.compactionThresholdInvalid': 'compactionThreshold 必须是绝对 token 数（如 200K）或窗口比例（如 60%）的字符串',
     'api.compactionInstructionInvalid': 'compactionInstruction 必须是不超过 10000 字的字符串',
     'api.repairScanFailed': '扫描会话目录失败：{p1}',
+    'api.authCookieSweepNotBoolean': 'authCookieSweep 必须是布尔值',
 
     'rule.backgroundJobTool.title': '后台任务工具',
     'rule.backgroundJobTool.desc': '创建工具对接 pwsh，让模型能把长命令丢到后台跑，不占住当前回合',
@@ -129,6 +130,11 @@ export const zh = {
     'rule.retryIntercept.forced': '常驻开启',
     'rule.retryIntercept.desc': '解决子代理运行过程中莫名的会话无法打开情况。',
     'rule.retryIntercept.help': '平台的校验只在读会话时做，写入路径上没有关卡；一旦坏数据落盘，整份会话就打不开。这一条在写入路径上补一道关卡，常驻开启、没有开关。修正发生时，会话回合尾部会显示一行浅色提示。',
+
+    'rule.authCookieSweep.title': '旧认证 cookie 自动清理',
+    'rule.authCookieSweep.desc': '每次打开界面时，清掉同一地址上攒下来的旧认证 cookie，只留当前这条',
+    'rule.authCookieSweep.help': '每次打开界面时，如果这个地址上的认证 cookie 超过 {p1} 条，就把旧的删掉、只留当前页面这一条；不到 {p1} 条什么都不做。注意：同时开着的另一个 DSH 实例（比如网页版）会因为它的 cookie 被删而掉线，需要重开启动链接。关掉这个开关后，桌面端每次启动都会重新攒一条，攒到约 68 条时浏览器请求头超出上限，页面直接打不开。只在 127.0.0.1、localhost 这类本机地址上生效。',
+    'rule.authCookieSweep.inactive': '当前环境不生效',
 
     'panel.settingsNotReady': '设置服务未就绪',
     'panel.latestVersionMissing': '检查更新返回的数据里没有版本号',
@@ -218,9 +224,9 @@ export const en: Record<CopyKey, string> = {
     'field.compactionThreshold.title': 'Trigger threshold',
     'field.compactionThreshold.desc': 'Compaction starts once the context grows to this size',
     'field.compactionThreshold.help':
-        'Accepts forms such as 1M / 200K / 100000: K means 1000 and M means 1000000, case-insensitive. It must be a positive integer.',
+        'Two forms: an absolute token count (1M / 200K / 100000 — K is 1000, M is 1000000, case-insensitive, positive integers only), or a share of the model context window (60%, between 1% and 100%). An absolute count is capped at 90% of the model window.',
     'field.compactionThreshold.placeholder': '200K',
-    'field.compactionThreshold.invalid': 'Invalid threshold; enter a value such as 200K or 100000',
+    'field.compactionThreshold.invalid': 'Invalid threshold; enter a value such as 200K, 100000 or 60%',
 
     'field.compactionInstruction.title': 'Summary instruction',
     'field.compactionInstruction.desc': 'The instruction sent to the model when a summary is generated',
@@ -247,9 +253,11 @@ export const en: Record<CopyKey, string> = {
     'api.subagentAggregationNotBoolean': 'subagentAggregation must be a boolean',
     'api.contextCompactionNotBoolean': 'contextCompaction must be a boolean',
     'api.compactionScopeInvalid': 'compactionScope must be one of all, main, subagent',
-    'api.compactionThresholdInvalid': 'compactionThreshold must be a string that parses to a positive integer',
+    'api.compactionThresholdInvalid':
+        'compactionThreshold must be a string holding an absolute token count (e.g. 200K) or a window share (e.g. 60%)',
     'api.compactionInstructionInvalid': 'compactionInstruction must be a string of at most 10000 characters',
     'api.repairScanFailed': 'Failed to scan the sessions directory: {p1}',
+    'api.authCookieSweepNotBoolean': 'authCookieSweep must be a boolean',
 
     'rule.backgroundJobTool.title': 'Background task tool',
     'rule.backgroundJobTool.desc': 'Creates a tool wired to pwsh, letting the model run long commands in the background without blocking the turn',
@@ -270,6 +278,11 @@ export const en: Record<CopyKey, string> = {
     'rule.retryIntercept.forced': 'Always on',
     'rule.retryIntercept.desc': 'Fixes the case where a session suddenly refuses to open while subagents are running.',
     'rule.retryIntercept.help': 'The platform validates retry chains only when reading a session; the write path has no gate. This rule adds one on the write path and is always on. A light note appears at the turn tail whenever a correction happens.',
+
+    'rule.authCookieSweep.title': 'Automatic cleanup of old auth cookies',
+    'rule.authCookieSweep.desc': 'Cleans up old auth cookies piled up on the same address every time the UI opens, keeping only the current one',
+    'rule.authCookieSweep.help': 'Every time the UI opens, if this address carries more than {p1} auth cookies, the plugin deletes the old ones and keeps only the one this page uses; below {p1} it does nothing. Note: another DSH instance that is open at the same time (the web version, for example) gets signed out because its cookie is deleted — reopen its launch link. With this switch off, the desktop app collects one more cookie per launch, and once there are about 68 of them the browser request header exceeds its limit and the page stops loading. It only applies on local addresses such as 127.0.0.1 and localhost.',
+    'rule.authCookieSweep.inactive': 'Not active in this environment',
 
     'panel.settingsNotReady': 'Settings service is not ready',
     'panel.latestVersionMissing': 'The update check returned no version',

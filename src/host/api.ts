@@ -25,8 +25,11 @@ import {
     RETRY_TOKENS_MAX_LENGTH,
     TOOL_FAILURE_PREFIXES_MAX_LENGTH,
     errText,
-    parseTokenCount,
+    解析压缩阈值,
+    是否回环主机名,
 } from './shared-format.js'
+import { 判定待删认证Cookie, 造删除响应头组 } from './auth-cookie-sweep.js'
+import { readConfig } from './config.js'
 import type { Ctx, HardenConfig, Logger, WebServerService, 会话查询面 } from './types.js'
 
 /** 本插件的路由前缀。 */
@@ -133,17 +136,6 @@ function parseAuthority(authority: string): URL | undefined {
     }
 }
 
-/** 主机名是否是回环地址：`localhost`、`[::1]` 或 `127.x.x.x`。 */
-function isLoopbackHostname(hostname: string): boolean {
-    if (hostname === 'localhost' || hostname === '[::1]') return true
-
-    const parts = hostname.split('.')
-    const isIpv4Shape = parts.length === 4 && parts[0] === '127'
-    const isNumericOnly = parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)
-
-    return isIpv4Shape && isNumericOnly
-}
-
 /** host 是否命中用户显式信任的 authority 清单（带端口的按「主机:端口」比，不带端口的只比主机名）。 */
 function isTrustedAuthority(hostUrl: URL, trustedHosts: string[]): boolean {
     return trustedHosts.some((entry) => {
@@ -172,7 +164,7 @@ export function validateRequestOrigin(req: IncomingMessage, trustedHosts: string
     const hostUrl = parseAuthority(host)
     if (hostUrl === undefined) return forbiddenHost()
 
-    const reachable = isLoopbackHostname(hostUrl.hostname) || isTrustedAuthority(hostUrl, trustedHosts)
+    const reachable = 是否回环主机名(hostUrl.hostname) || isTrustedAuthority(hostUrl, trustedHosts)
     if (!reachable) return forbiddenHost()
 
     // 跨站发起的请求一律拒绝，哪怕 host 头本身看着正常。
@@ -223,13 +215,26 @@ function validateMutationRequest(req: IncomingMessage, trustedHosts: string[]): 
 function ignoreClientAbort(): void {}
 
 /**
- * 回一个 JSON 响应。
+ * 回一个 JSON 响应，可顺带挂上额外响应头。
+ *
+ * **为什么需要附加头组。** 旧认证 cookie 的清理要在**同一个正常 JSON 响应**上同时挂多条
+ * `Set-Cookie`：一个 cookie 一条独立响应头，值必须给**字符串数组**（拼成一条会被浏览器当成
+ * 一个畸形 cookie）。故这里多一个可选头组，默认空对象 ⇒ 现有调用方一行不用改、行为不变。
+ *
+ * **为什么走 `writeHead` 而不是 `res.setHeader`。** 头随状态码一次写完，不需要「先设头再写头」
+ * 两步；测试的响应桩也只实现了 `once` / `writeHead` / `end`。
  *
  * @param res - Node 的响应对象。
  * @param statusCode - HTTP 状态码。
  * @param payload - 可 JSON 序列化的响应体。
+ * @param 附加头组 - 一并写出的额外响应头（如多条 `set-cookie`）；默认不带。
  */
-export function json(res: ServerResponse, statusCode: number, payload: unknown): void {
+export function json(
+    res: ServerResponse,
+    statusCode: number,
+    payload: unknown,
+    附加头组: Record<string, string | string[]> = {},
+): void {
     if (res.writableEnded || res.destroyed) return
 
     res.once('error', ignoreClientAbort)
@@ -239,6 +244,7 @@ export function json(res: ServerResponse, statusCode: number, payload: unknown):
         res.writeHead(statusCode, {
             'content-type': 'application/json; charset=utf-8',
             'content-length': Buffer.byteLength(body),
+            ...附加头组,
         })
         res.end(body)
 
@@ -458,7 +464,7 @@ async function handleUpdateConfig(req: IncomingMessage, res: ServerResponse, dep
     }
 
     const compactionThreshold = body?.compactionThreshold
-    if (typeof compactionThreshold !== 'string' || parseTokenCount(compactionThreshold) === null) {
+    if (typeof compactionThreshold !== 'string' || 解析压缩阈值(compactionThreshold) === null) {
         json(res, 400, { ok: false, error: 'api.compactionThresholdInvalid' })
         return
     }
@@ -466,6 +472,12 @@ async function handleUpdateConfig(req: IncomingMessage, res: ServerResponse, dep
     const compactionInstruction = body?.compactionInstruction
     if (typeof compactionInstruction !== 'string' || compactionInstruction.length > COMPACTION_INSTRUCTION_MAX_LENGTH) {
         json(res, 400, { ok: false, error: 'api.compactionInstructionInvalid' })
+        return
+    }
+
+    const authCookieSweep = body?.authCookieSweep
+    if (typeof authCookieSweep !== 'boolean') {
+        json(res, 400, { ok: false, error: 'api.authCookieSweepNotBoolean' })
         return
     }
 
@@ -483,6 +495,7 @@ async function handleUpdateConfig(req: IncomingMessage, res: ServerResponse, dep
             compactionScope,
             compactionThreshold,
             compactionInstruction,
+            authCookieSweep,
         })
 
     } catch (error) {
@@ -584,6 +597,98 @@ async function handleRepairSessions(req: IncomingMessage, res: ServerResponse, d
 }
 
 /**
+ * `POST /sweep-auth-cookies`：删掉本机那些不属于当前页面的旧认证 cookie。
+ *
+ * **为什么清。** 平台签发的认证 cookie 名字是 `dsh-auth-` + 授权域的 sha256（base64url），而桌面端
+ * 每次启动都换端口 ⇒ 每启动一次就多一条名字不同、永不复用的死 cookie；HTTP 下的 cookie 又不按端口
+ * 隔离，它们全堆进同一个 `Cookie` 请求头，约 68 条时撑爆 Node 默认 16 KB 的请求头上限（431，
+ * 页面直接打不开）。清理就是把没越过门槛的那些死 cookie 删掉。
+ *
+ * **保谁。** 只删「不属于当前页面」的：当前页面那条的名字用本请求的 `Host` 头现算，算不出来就一条
+ * 都不删——宁可留着垃圾，也不能赌错当前那条把用户锁在门外。
+ *
+ * **门槛。** `Cookie` 头里的 `dsh-auth-*` **严格超过** 20 条才动手（口径收敛在
+ * `auth-cookie-sweep.ts`，这里不另写一份）。
+ *
+ * **为什么静默。** 它由 client 半边在页面加载时自动调，不是用户点的按钮：空操作不写日志、不打
+ * 任何提示，否则每开一次页面就刷一行噪音。
+ *
+ * **为什么只在回环上动手。** 非回环地址可能是别人通过 `--host` / `--trusted-host` 暴露出来的——
+ * 那台机器上是别人的浏览器，删 cookie 会把别人的会话当场踢掉。故只清本机。
+ *
+ * **围栏用写围栏。** 这是服务端改写浏览器状态（删 cookie），不是读；且写围栏把请求变成非简单请求、
+ * 跨站页面必须过预检 ⇒ 挡得住「跨站 GET 顺手触发一次清理」这类简单请求 CSRF。
+ *
+ * @param req - Node 的请求对象（读围栏要的 Host 与 Cookie 头都从这里取）。
+ * @param res - Node 的响应对象。
+ * @param deps - 取值依赖（配置开关从作用域现取）。
+ * @param logger - 日志出口（只在真删了东西时写一行）。
+ */
+async function handleSweepAuthCookies(
+    req: IncomingMessage,
+    res: ServerResponse,
+    deps: ApiDeps,
+    logger: Logger,
+): Promise<void> {
+    const requestError = validateMutationRequest(req, deps.trustedHosts ?? [])
+    if (requestError !== null) {
+        json(res, requestError.statusCode, { ok: false, error: requestError.error })
+        return
+    }
+
+    // 体里没有内容，但必须读掉：keep-alive 连接上残留未读数据会污染下一个请求。
+    try {
+        await readJsonBody(req)
+
+    } catch (error) {
+        const statusCode = (error as { statusCode?: number }).statusCode ?? 400
+        json(res, statusCode, { ok: false, error: `api.bodyReadFailed|${escapeArg(errText(error))}` })
+        return
+    }
+
+    const scope = deps.getScope()
+    if (scope === undefined) {
+        json(res, 503, { ok: false, error: 'api.settingsNotReady' })
+        return
+    }
+
+    const 配置 = readConfig(scope.get())
+    if (配置.authCookieSweep === false) {
+        json(res, 200, { ok: true, 清理数: 0 })
+        return
+    }
+
+    let 是回环 = false
+    try {
+        是回环 = 是否回环主机名(new URL(`http://${req.headers.host ?? ''}`).hostname)
+
+    } catch {
+        // Host 头解析不出来就按非回环办：这次不清，也好过在别人的浏览器上删 cookie。
+    }
+
+    if (是回环 === false) {
+        json(res, 200, { ok: true, 清理数: 0 })
+        return
+    }
+
+    const 待删名组 = 判定待删认证Cookie(req.headers.cookie, req.headers.host)
+    if (待删名组.length === 0) {
+        json(res, 200, { ok: true, 清理数: 0 })
+        return
+    }
+
+    const 头组 = 造删除响应头组(待删名组)
+    json(
+        res,
+        200,
+        { ok: true, 清理数: 头组.length },
+        { 'set-cookie': 头组 },
+    )
+
+    logger.info?.(`[harden] 旧认证 cookie 已清理：删除 ${头组.length} 条（host=${req.headers.host ?? '-'}）`)
+}
+
+/**
  * 挂上本插件的 HTTP 路由。
  *
  * 需要 `webServer`（注册路由）。设置服务缺席时读端点回 `config: null`、写端点回 503，
@@ -668,6 +773,11 @@ export function mountApi(ctx: Ctx, logger: Logger, deps: ApiDeps): void {
 
             if (req.method === 'POST' && path === `${API_PREFIX}/repair-sessions`) {
                 await handleRepairSessions(req, res, deps)
+                return
+            }
+
+            if (req.method === 'POST' && path === `${API_PREFIX}/sweep-auth-cookies`) {
+                await handleSweepAuthCookies(req, res, deps, logger)
                 return
             }
 
