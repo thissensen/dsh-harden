@@ -35,7 +35,7 @@ In one sentence: **an explicit failure is fine; a silent stop is not.**
 
 ## Compatibility
 
-- **DSH 0.2.2-rc.1 or newer only**: tested on `dsh@0.2.2-rc.1`; do not install it on an older platform.
+- **DSH 0.2.2-rc.1 or newer only**: builds and tests pass on `dsh@0.2.2` rc.1 / rc.2; do not install it on an older platform.
 - **Still on DSH 0.2.1? Keep using `0.0.3`**: that version stays on npm and will not be removed.
 - **No dual-track "use it if present, silently fall back if not"**: this release calls platform interfaces that only exist in 0.2.2, so it fails outright on older versions — the plugin does not probe the platform version and has no fallback path.
 
