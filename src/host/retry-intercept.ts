@@ -75,6 +75,14 @@ const 记录存储组 = new Map<string, 拦截记录[]>()
 const 已装会话组 = new WeakSet<object>()
 
 /**
+ * 批量 append 里出现过重试事件时只 warn 一次。
+ *
+ * 模块七只拦单条重载：批量是整体校验 + 整体发布，逐条改写会破坏这次写入的原子性；而漏拦必须有可见信号，
+ * 每批都刷日志又会把日志淹掉，故全进程只提示一次。
+ */
+let 是否已警告批量重试 = false
+
+/**
  * 冷读结果的缓存时限（毫秒）。
  *
  * 一次冷读要读**整份**会话日志，而 client 的提示行最快每秒就来拉一次——不缓存等于把「读日志」变成每秒一次的
@@ -196,14 +204,15 @@ async function 取冷读记录(会话ID: string, 会话查询: 会话查询面):
     return 缓存.记录组.map((记录) => ({ ...记录 }))
 }
 
-/** 拦截器要用的会话面：写入口（`append`）+ 会话头（取会话 id）。 */
+/** 拦截器要用的会话面：写入口（单条与批量两个重载）+ 会话头（取会话 id）。 */
 interface 拦截会话 {
     /**
-     * 追加一条会话事件。
+     * 追加会话事件。平台有**两个重载**：单条 `append(type, data, opts?)` 与批量 `append(inputs)`
+     * （`inputs` 是事件元组数组，首参因此不是字符串）。
      *
      * 会话来自平台载荷、拿到手是 `unknown`，形状按需收窄：`append` 不是函数的会话不装拦截器、什么都不做。
      */
-    append(type: string, data: unknown, opts?: unknown): unknown
+    append(类型: unknown, 数据: unknown, ...选项组: unknown[]): unknown
     /** 会话头；`header.id` 是平台公开读面上的会话 id。 */
     readonly header?: { readonly id?: string }
 }
@@ -288,7 +297,23 @@ function 安装拦截器(会话: 拦截会话, logger: Logger): void {
     // ——链首见按原坐标播种、不重排，那条平台合法写下的事件原样放行。
     const 账本 = new 重试链账本('增量')
 
-    会话.append = (类型: string, 数据: unknown, ...选项组: unknown[]): unknown => {
+    会话.append = (类型: unknown, 数据: unknown, ...选项组: unknown[]): unknown => {
+        // 批量重载（首参是事件元组数组）是整体校验 + 整体发布：改写其中一条就毁掉这次写入的原子性，
+        // 而账本本来就是按单条先后顺序喂的增量状态机 ⇒ 整批透传，只在第一次遇到含重试事件的批量时留痕。
+        // 首参既不是字符串也不是数组时（平台签名再变）照样透传——包装层不该比平台先抛。
+        if (typeof 类型 !== 'string') {
+            const 批量组: readonly unknown[] = Array.isArray(类型) ? 类型 : []
+            const 含重试事件 = 批量组.some(
+                (项) => Array.isArray(项) && (项[0] === 'llm/retry' || 项[0] === 'llm/retry-started'),
+            )
+            if (含重试事件 && 是否已警告批量重试 === false) {
+                是否已警告批量重试 = true
+                logger.warn?.('[harden] 平台用批量 append 写了重试事件：批量不改写，本批未做重试链归一')
+            }
+
+            return 原始append(类型, 数据, ...选项组)
+        }
+
         // 只认两条重试事件；其余类型直接透传（零额外开销、零行为变化）。
         if (类型 !== 'llm/retry' && 类型 !== 'llm/retry-started') return 原始append(类型, 数据, ...选项组)
 

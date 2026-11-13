@@ -24,11 +24,9 @@
  * **不设 `outputLimitBytes`**：完成通知的内联上限（`inlineOutputBytes`，默认 2048 字节）
  * 与 `job_output` 的读取本来就是两档边界，生产方自拍一个上限只会把读取也一并截断。
  *
- * **内部函数逐字对照** `dsh-tool-pwsh/lib/index.js`（仅加类型注解）：
- * - `sandboxNotes`   来源 L22-L30
- * - `processOutcome` 来源 L42-L55
- * - `processSources` 来源 L66-L79
- * - `processJob`     来源 L100-L126
+ * **内部函数逐字对照** `dsh-tool-pwsh/src/background.ts`（0.2.2-rc.2 起从 `lib/index.js` 拆出；仅加类型注解）：
+ * - `sandboxNotes` / `processOutcome` / `processSources` / `processJob`
+ * - **有意不跟进** `processJob` 新增的 `failure()`：本工具是纯后台，终态由 `done` 自己给出。
  *
  * @module dsh-harden/job-background
  */
@@ -180,17 +178,22 @@ interface JobBackgroundArgs {
  * 原样进 job 终态只会变成模型与用户眼里的噪音，所以认识的 code 换成中文说明，其余沿用原文。
  *
  * code 按字段读、不判 `instanceof`：真出现两份 `dsh-llm` 时类身份对不上，按字段读照样能路由。
+ *
+ * rc.1 的 `SANDBOX_UNSUPPORTED_POLICY` 保留：桌面端内嵌运行时仍是 rc.1，那里仍会抛它；rc.2 已删该码，
+ * 桌面端升到 rc.2 之后可以删掉这一条（两套产物各自独立升级，见 `.harness/05-坑册.md` 环境事实）。
  */
 const 沙箱错误说明表: ReadonlyMap<string, string> = new Map([
     ['SANDBOX_UNAVAILABLE', '沙箱不可用：本机没有可用的沙箱后端，命令未执行'],
     ['SANDBOX_UNSUPPORTED_POLICY', '沙箱拒绝这条权限组合：当前部署不支持请求的策略，命令未执行'],
     ['SANDBOX_INVALID_ROOT', '沙箱根目录不可用：额外的可写目录不存在、不是目录或是符号链接，命令未执行'],
+    ['SANDBOX_PREPARATION_FAILED', '沙箱准备失败：本机沙箱后端没能准备好受限进程所需的宿主状态，命令未执行'],
+    ['SANDBOX_INVALID_TEMP_ROOT', '沙箱临时目录不可用：宿主临时目录落在工作区内，命令未执行'],
 ])
 
-// ── 内部函数（逐字对照 dsh-tool-pwsh/lib/index.js）──────────────────────
+// ── 内部函数（逐字对照 dsh-tool-pwsh/src/background.ts）─────────────────
 
 /**
- * 与 dsh-tool-pwsh/lib/index.js L22-L30 逐字一致。
+ * 与 `dsh-tool-pwsh/src/background.ts` 的 `sandboxNotes` 逐字一致。
  *
  * 终态说明里值得一记的 sandbox 事实：runner 从未跑命令、或命令被策略拒绝。
  * @param sandbox - 已落定的沙箱事实（未 confinement 时为 undefined）。
@@ -215,7 +218,7 @@ function sandboxNotes(
 }
 
 /**
- * 与 dsh-tool-pwsh/lib/index.js L42-L55 逐字一致。
+ * 与 `dsh-tool-pwsh/src/background.ts` 的 `processOutcome` 逐字一致。
  *
  * 把已落定的后台进程映射到通用 job-outcome 词汇：`killed` 保持 `killed`
  * （detail 记信号），其余一律 `completed`（detail 记退出码）。非零退出被
@@ -246,7 +249,7 @@ function processOutcome(
 }
 
 /**
- * 与 dsh-tool-pwsh/lib/index.js L66-L79 逐字一致。
+ * 与 `dsh-tool-pwsh/src/background.ts` 的 `processSources` 逐字一致。
  *
  * 把进程的非消费式流读者做成 registry pull source。它们懒绑定——进程在 starter
  * 里 spawn，admission 之后才有值；spawn 前的读返回空，pump 不动模型的消费游标。
@@ -270,7 +273,7 @@ function processSources(
 }
 
 /**
- * 与 dsh-tool-pwsh/lib/index.js L100-L126 逐字一致。
+ * 结构对照 `dsh-tool-pwsh/src/background.ts` 的 `processJob`（上游多返回 `failure()`，本工具纯后台、有意不抄）。
  *
  * 在 job admission 后适配异步 shell 准备，而不暴露半个进程：`cancel` 先
  * abort controller、再 kill 进程；`done` 挂在 `shell.execute` 返回的进程句柄上，
@@ -337,7 +340,7 @@ function validateArgs(args: JobBackgroundArgs): void {
 }
 
 /**
- * 与 dsh-tool-pwsh/lib/index.js 的 `resolveWorkdir` 逻辑一致：显式 workdir 优先，
+ * 与 `dsh-tool-pwsh/src/index.ts` 的 `resolveWorkdir` 逻辑一致：显式 workdir 优先，
  * 相对路径以会话头 cwd 为基准；都没给就不传，交给 executor 默认。
  */
 function resolveWorkdir(modelWorkdir: string | undefined, exec: ExecLike): string | undefined {
@@ -351,7 +354,7 @@ function resolveWorkdir(modelWorkdir: string | undefined, exec: ExecLike): strin
 }
 
 /**
- * 与 dsh-tool-pwsh/lib/index.js 的 `toolAborted` 一致。
+ * 与 `dsh-tool-pwsh/src/index.ts` 的 `toolAborted` 一致。
  */
 function toolAborted(): Error {
     const error = new HarnessError('工具调用已中止', TOOL_ABORTED) as Error & { name: string }

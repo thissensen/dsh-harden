@@ -92,7 +92,7 @@ function 启动数据(retryId: string, retry: number): Record<string, unknown> {
 
 /** 一次落到原始 append 上的调用。 */
 interface 落盘调用 {
-    类型: string
+    类型: unknown
     数据: unknown
     选项组: unknown[]
 }
@@ -100,7 +100,7 @@ interface 落盘调用 {
 /** 会话桩：带拦截器要的写入面与会话头，另带读取面（只读端点按它读会话日志里的记录）。 */
 interface 会话桩 {
     header: { id?: string }
-    append(类型: string, 数据: unknown, ...选项组: unknown[]): unknown
+    append(类型: unknown, 数据: unknown, ...选项组: unknown[]): unknown
     snapshotEvents(起点?: number): readonly SessionEventLike[]
 }
 
@@ -155,7 +155,7 @@ function 造会话桩(会话ID?: string, 事件组: SessionEventLike[] = []): {
     const 会话: 会话桩 = {
         header: 会话ID === undefined ? {} : { id: 会话ID },
 
-        append(类型: string, 数据: unknown, ...选项组: unknown[]): unknown {
+        append(类型: unknown, 数据: unknown, ...选项组: unknown[]): unknown {
             落盘组.push({ 类型, 数据, 选项组 })
             进入时日志记录数.push(平台桩.落盘调用组.length)
             // 用例可切：模拟平台拒收这次写入。桩在抛之前已记下调用，用来断言改写确实交给了原 append。
@@ -277,6 +277,53 @@ describe('写入透传', () => {
             expect(落盘组[下标].数据).toBe(事件.数据)
         }
         expect(获取拦截记录('合法链-1')).toEqual([])
+    })
+})
+
+describe('批量 append（平台的数组重载）', () => {
+    it('批量入参原样透传：落到的就是同一个数组，返回值不变', async () => {
+        const { 会话, 落盘组 } = await 装会话('批量-透传-1')
+        const 批量组 = [
+            ['assistant/message', { turn: 1, step: 7, message: { content: [] } }],
+            ['user/message', { message: { content: [] } }],
+        ]
+
+        const 返回值 = 会话.append(批量组)
+
+        // 批量是整体校验 + 整体发布：不拆、不改写，连参数形状都原样交给平台。
+        expect(落盘组).toHaveLength(1)
+        expect(落盘组[0].类型).toBe(批量组)
+        expect(落盘组[0].数据).toBeUndefined()
+        expect(返回值).toEqual({ seq: 1 })
+        expect(获取拦截记录('批量-透传-1')).toEqual([])
+    })
+
+    it('批量里含重试事件：不改写、不记记录，只 warn 一次（第二批不再刷日志）', async () => {
+        const { 会话, 落盘组 } = await 装会话('批量-警告-1')
+        const 批量组 = [
+            ['llm/retry', 重试数据('批量链', 1, { maxRetries: 99 })],
+            ['llm/retry-started', 启动数据('批量链', 1)],
+        ]
+
+        会话.append(批量组)
+        会话.append(批量组)
+
+        expect(落盘组).toHaveLength(2)
+        expect(落盘组[1].类型).toBe(批量组)
+        expect(获取拦截记录('批量-警告-1')).toEqual([])
+        expect(日志行组.filter((行) => 行.includes('批量 append')).length).toBe(1)
+    })
+
+    it('批量不进账本：随后的同链单条写入仍按链首见原样放行', async () => {
+        const { 会话, 落盘组 } = await 装会话('批量-账本-1')
+        会话.append([['llm/retry', 重试数据('批量链', 1, { maxRetries: 99 })]])
+        const 后续 = 重试数据('批量链', 1, { maxRetries: 99 })
+
+        会话.append('llm/retry', 后续)
+
+        // 批量被放过，也就没有喂账本：后续单条仍是这条链的「首见」，原对象直通、不重排成 retry=2。
+        expect(落盘组[1].数据).toBe(后续)
+        expect(获取拦截记录('批量-账本-1')).toEqual([])
     })
 })
 

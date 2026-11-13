@@ -13,7 +13,7 @@
 
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { SandboxUnavailableError } from '@deepseek-ai/dsh-sandbox'
+import { SandboxPreparationError, SandboxUnavailableError } from '@deepseek-ai/dsh-sandbox'
 import { mountJobBackground } from '../src/host/job-background.js'
 import type { Ctx, Logger } from '../src/host/types.js'
 
@@ -291,6 +291,38 @@ describe('启动失败的终态明细', () => {
 
         expect(终态.status).toBe('failed')
         expect(终态.detail).toBe('沙箱不可用：本机没有可用的沙箱后端，命令未执行（SANDBOX_UNAVAILABLE）')
+    })
+
+    it('沙箱准备失败的 code 换成中文终态', async () => {
+        const 宿主 = 造宿主(() => true, new SandboxPreparationError('private temp dir setup failed', 'SANDBOX_PREPARATION_FAILED'))
+
+        await 宿主.注册组[0].execute({ command: 'echo hi' }, 造执行环境())
+        const 终态 = await 宿主.任务记录组[0].run().done
+
+        expect(终态.status).toBe('failed')
+        expect(终态.detail).toBe('沙箱准备失败：本机沙箱后端没能准备好受限进程所需的宿主状态，命令未执行（SANDBOX_PREPARATION_FAILED）')
+    })
+
+    it('宿主临时目录落在工作区内的 code 单列一条中文终态', async () => {
+        const 宿主 = 造宿主(() => true, new SandboxPreparationError('temp root lies inside the workspace', 'SANDBOX_INVALID_TEMP_ROOT'))
+
+        await 宿主.注册组[0].execute({ command: 'echo hi' }, 造执行环境())
+        const 终态 = await 宿主.任务记录组[0].run().done
+
+        expect(终态.status).toBe('failed')
+        expect(终态.detail).toBe('沙箱临时目录不可用：宿主临时目录落在工作区内，命令未执行（SANDBOX_INVALID_TEMP_ROOT）')
+    })
+
+    it('rc.1 运行时的 SANDBOX_UNSUPPORTED_POLICY 仍按码换中文（桌面端还在 rc.1）', async () => {
+        // rc.2 的沙箱包已删这条码，但桌面端内嵌运行时仍是 rc.1、仍会抛它；按字段路由，构造等价错误即可。
+        const 旧码错误 = Object.assign(new Error('sandbox policy unsupported'), { code: 'SANDBOX_UNSUPPORTED_POLICY' })
+        const 宿主 = 造宿主(() => true, 旧码错误)
+
+        await 宿主.注册组[0].execute({ command: 'echo hi' }, 造执行环境())
+        const 终态 = await 宿主.任务记录组[0].run().done
+
+        expect(终态.status).toBe('failed')
+        expect(终态.detail).toBe('沙箱拒绝这条权限组合：当前部署不支持请求的策略，命令未执行（SANDBOX_UNSUPPORTED_POLICY）')
     })
 
     it('不认识的错误沿用原文', async () => {
