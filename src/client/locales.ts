@@ -54,12 +54,9 @@ export const zh = {
         '官方重试次数用尽后，插件按下面配置的失败特征再补几轮，让 502、限流、超时、流中断这类瞬时故障多几次机会。',
 
     'field.retryCount.title': '网络重试次数',
-    'field.retryCount.desc': '因网络请求中断时的重试次数，全局生效',
     'field.retryCount.help': '官方重试耗尽后，插件最多再补几次。填 0 表示不兜底；范围 0 到 99。',
-    'field.retryCount.invalid': '重试次数必须是 0 到 99 的整数',
 
     'field.retryTokens.title': '触发重试的失败特征',
-    'field.retryTokens.desc': '命中这些错误码或 HTTP 状态码时才兜底重试',
     'field.retryTokens.help':
         '逗号分隔，可混填错误码（SERVER、RATE_LIMIT、TIMEOUT、TRANSPORT 等）与 HTTP 状态码（502、429 等）。留空表示不重试任何失败。',
 
@@ -76,14 +73,12 @@ export const zh = {
     'field.compactionScope.optionSubagent': '仅子代理',
 
     'field.compactionThreshold.title': '触发阈值',
-    'field.compactionThreshold.desc': '上下文涨到这个量就开始压缩',
     'field.compactionThreshold.help':
         '两种写法：绝对 token 数（1M / 200K / 100000，K 等于 1000、M 等于 1000000，不区分大小写，必须是正整数）；或占模型上下文窗口的比例（60%，取 1%~100%）。绝对写法会被模型窗口的 90% 夹住。',
     'field.compactionThreshold.placeholder': '200K',
     'field.compactionThreshold.invalid': '阈值格式不对，请填 200K、100000 或 60% 这类值',
 
     'field.compactionInstruction.title': '摘要指令',
-    'field.compactionInstruction.desc': '生成摘要时发给模型的指令',
     'field.compactionInstruction.help':
         '压缩时连同这段指令一起发给模型，告诉它摘要要覆盖哪些内容，可按自己的习惯改。默认是一段中文 8 段骨架。',
     'field.compactionInstruction.placeholder':
@@ -110,6 +105,8 @@ export const zh = {
     'api.compactionInstructionInvalid': 'compactionInstruction 必须是不超过 10000 字的字符串',
     'api.repairScanFailed': '扫描会话目录失败：{p1}',
     'api.authCookieSweepNotBoolean': 'authCookieSweep 必须是布尔值',
+    // 有意不设词条：host 的 api.versionCheckFailed 只会落到面板的 failed 态（「检查失败，点击重试」），
+    // 错误原文按规格永不显示；补词条等于往字典里加一条不渲染的数据。
 
     'rule.backgroundJobTool.title': '后台任务工具',
     'rule.backgroundJobTool.desc': '创建工具对接 pwsh，让模型能把长命令丢到后台跑，不占住当前回合',
@@ -137,12 +134,11 @@ export const zh = {
     'rule.authCookieSweep.inactive': '当前环境不生效',
 
     'panel.settingsNotReady': '设置服务未就绪',
-    'panel.latestVersionMissing': '检查更新返回的数据里没有版本号',
 
     'repair.title': '修复损坏会话',
     'repair.desc': '扫描全部会话文件，修复已知的损坏形态，让打不开的会话重新可用',
     'repair.help':
-        '已知的损坏形态会让平台整份拒读会话文件：重试链异常（重试编号重复/跳号、同一链的 id 不一致）与事件序号范围编码。一键扫描全部会话文件，能修的修好，修不了的如实跳过。',
+        '已知的损坏形态会让平台整份拒读会话文件：重试链异常（重试编号重复/跳号、同一链的 id 不一致）。一键扫描全部会话文件，能修的修好，修不了的如实跳过。',
     'repair.button': '一键扫描并修复',
     'repair.running': '正在扫描并修复…',
     'repair.done': '扫描 {p1} 个会话：无需修复 {p2} 个、已修复 {p3} 个、修不了 {p4} 个、读取失败 {p5} 个',
@@ -200,12 +196,9 @@ export const en: Record<CopyKey, string> = {
         'After the official retries are exhausted, the plugin adds a few more attempts for the failure kinds listed below, giving transient faults such as 502, rate limits, timeouts and broken streams another chance.',
 
     'field.retryCount.title': 'Network retry count',
-    'field.retryCount.desc': 'How many times to retry when a network request is interrupted; applies to every provider',
     'field.retryCount.help': 'How many extra attempts the plugin makes after the official retries run out. 0 disables it; range 0 to 99.',
-    'field.retryCount.invalid': 'Retry count must be an integer between 0 and 99',
 
     'field.retryTokens.title': 'Failures that trigger a retry',
-    'field.retryTokens.desc': 'Only these codes or HTTP statuses are retried by the plugin',
     'field.retryTokens.help':
         'Comma-separated; mix failure codes (SERVER, RATE_LIMIT, TIMEOUT, TRANSPORT) with HTTP statuses (502, 429). Empty means no failure is retried.',
 
@@ -222,14 +215,12 @@ export const en: Record<CopyKey, string> = {
     'field.compactionScope.optionSubagent': 'Subagents only',
 
     'field.compactionThreshold.title': 'Trigger threshold',
-    'field.compactionThreshold.desc': 'Compaction starts once the context grows to this size',
     'field.compactionThreshold.help':
         'Two forms: an absolute token count (1M / 200K / 100000 — K is 1000, M is 1000000, case-insensitive, positive integers only), or a share of the model context window (60%, between 1% and 100%). An absolute count is capped at 90% of the model window.',
     'field.compactionThreshold.placeholder': '200K',
     'field.compactionThreshold.invalid': 'Invalid threshold; enter a value such as 200K, 100000 or 60%',
 
     'field.compactionInstruction.title': 'Summary instruction',
-    'field.compactionInstruction.desc': 'The instruction sent to the model when a summary is generated',
     'field.compactionInstruction.help':
         'This instruction is sent along with the conversation when compacting, telling the model what the summary must cover; customize it as you like. The default is a Chinese eight-section skeleton.',
     'field.compactionInstruction.placeholder':
@@ -285,12 +276,11 @@ export const en: Record<CopyKey, string> = {
     'rule.authCookieSweep.inactive': 'Not active in this environment',
 
     'panel.settingsNotReady': 'Settings service is not ready',
-    'panel.latestVersionMissing': 'The update check returned no version',
 
     'repair.title': 'Repair broken sessions',
     'repair.desc': 'Scans every session file and repairs known kinds of damage so unreadable sessions work again',
     'repair.help':
-        'Known kinds of damage make the platform reject a whole session file: a broken retry chain (repeated or skipped retry numbers, or mismatched ids within one chain) and event-sequence range encodings. One click scans every session file, repairs what it can, and skips the rest.',
+        'Known kinds of damage make the platform reject a whole session file: a broken retry chain (repeated or skipped retry numbers, or mismatched ids within one chain). One click scans every session file, repairs what it can, and skips the rest.',
     'repair.button': 'Scan and repair',
     'repair.running': 'Scanning and repairing…',
     'repair.done': 'Scanned {p1} sessions: {p2} intact, {p3} repaired, {p4} unrepairable, {p5} read-failed',

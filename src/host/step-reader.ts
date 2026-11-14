@@ -29,10 +29,21 @@ interface 回合消息记忆 {
     readonly turn: number
     readonly step: number
     readonly message: AssistantMessageLike
+    /** 写下这条记忆的挂载代号（见 `当前挂载代号`）。 */
+    readonly 挂载代号: number
 }
 
 /** 每个会话的回合消息记忆；键是 session 对象本身（WeakMap 让会话回收时记忆自动消失）。 */
 const 回合消息记忆组 = new WeakMap<object, 回合消息记忆>()
+
+/**
+ * 当前挂载的代号：每挂一次加一。
+ *
+ * **为什么需要它。** 热重载复用模块实例时 `回合消息记忆组` 还在，旧监听器在回合中途留下的快照会
+ * 一直留到回合收尾；若只比回合号，收尾时会把那份**过时的**（step 更小）快照当成本回合最后一步，
+ * H2 就会对着一步只有思考的消息误伤。比代号后旧挂载的记忆一律作废 ⇒ 该回合漏判（宁可漏判、不可误伤）。
+ */
+let 当前挂载代号 = 0
 
 /**
  * 挂「回合消息记忆」：订阅 `session/event`，把每个会话最后一条 `assistant/message` 记下来。
@@ -41,7 +52,8 @@ const 回合消息记忆组 = new WeakMap<object, 回合消息记忆>()
  * 收尾判定那一刻，记忆里已经是本回合最后一条 assistant 消息。
  *
  * **已接受的语义变化。** 插件热重载正好夹在回合中间时，当前回合此前写下的消息没进记忆 ⇒ 该回合
- * H1/H2 漏判——宁可漏判、不可误伤。
+ * H1/H2 漏判——宁可漏判、不可误伤。旧挂载在回合中途留下的那份记忆按挂载代号作废（见
+ * `当前挂载代号`），不会拿陈旧快照误伤。
  *
  * **本轮未验证的假设。** `session/event` 给出的 session 与 `agent.session` 是同一个对象（记忆按它
  * 做键）；真机任务首查这一条。
@@ -49,6 +61,9 @@ const 回合消息记忆组 = new WeakMap<object, 回合消息记忆>()
  * @param ctx - cordis 上下文。
  */
 export function mountTurnSnapshotMemory(ctx: Ctx): void {
+    当前挂载代号 += 1
+    const 本次挂载代号 = 当前挂载代号
+
     ctx.on('session/event', (sessionRaw: unknown, eventRaw: unknown): void => {
         if (eventRaw === null || typeof eventRaw !== 'object') return
 
@@ -66,7 +81,7 @@ export function mountTurnSnapshotMemory(ctx: Ctx): void {
         // 同回合里步号更小的旧消息不许盖掉新的：判定看的是最后一步，被盖回去就是误判。
         if (上一条记忆 !== undefined && 上一条记忆.turn === turn && 上一条记忆.step > step) return
 
-        回合消息记忆组.set(sessionRaw as object, { turn, step, message })
+        回合消息记忆组.set(sessionRaw as object, { turn, step, message, 挂载代号: 本次挂载代号 })
     })
 }
 
@@ -78,11 +93,12 @@ export function mountTurnSnapshotMemory(ctx: Ctx): void {
  *
  * @param session - agent 的会话（记忆的键）。
  * @param turn - 回合号。
- * @returns 最后一步的快照；记忆里没有该回合的消息时返回 null（放行）。
+ * @returns 最后一步的快照；记忆里没有该回合的消息、或记忆来自旧的挂载时返回 null（放行）。
  */
 export function readTurnSnapshot(session: SessionLike, turn: number): TurnSnapshot | null {
     const 记忆 = 回合消息记忆组.get(session)
     if (记忆 === undefined || 记忆.turn !== turn) return null
+    if (记忆.挂载代号 !== 当前挂载代号) return null
 
     return 投影回合快照(记忆.message, 记忆.step)
 }

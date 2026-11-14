@@ -519,8 +519,10 @@ interface SessionRepairDetail {
  * **为什么顺序 await。** 每个文件都要读、改、写临时文件再 rename；并发处理会同时占住
  * 大量文件句柄，而会话目录里几百个文件很常见，逐个走更稳。
  *
- * **为什么活跃文件不会被硬改。** 平台正占用中的会话文件 readFile / rename 会失败，
- * repairSessionFile 如实报 read-failed——这里只统计，不重试、不绕路。
+ * **为什么活跃文件不会被硬改。** 平台写手逐批 open→write→fsync→close（句柄只存在几毫秒），
+ * readFile / rename 只是**碰巧**撞上这一刻才会失败；真正会丢事件的「读完又被追加」由修复器比对
+ * 读前 / 写前文件签名兜住（`session-repair.ts` 的 `获取文件签名`），签名变了就放弃写回、如实报
+ * read-failed——这里只统计，不重试、不绕路。
  *
  * @param req - Node 的请求对象。
  * @param res - Node 的响应对象。
@@ -781,7 +783,7 @@ export function mountApi(ctx: Ctx, logger: Logger, deps: ApiDeps): void {
                 return
             }
 
-            json(res, 404, { ok: false, error: `api.unknownAction|${req.method} ${escapeArg(path)}` })
+            json(res, 404, { ok: false, error: `api.unknownAction|${req.method}|${escapeArg(path)}` })
         },
     })
 

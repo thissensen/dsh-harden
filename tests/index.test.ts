@@ -2,8 +2,9 @@
  * host 入口 `src/host/index.ts` 的监听器接线测试。
  *
  * 判定核心的纯函数用例在 `guard.test.ts`；这里测**接线**：回合消息记忆与两条看护规则的配合
- * （记忆由 `session/event` 监听器喂，`agent/turn-stopping` 上只查记忆）、规则 H3 的「先等官方决定」
- * 顺序与名额记账（含换模型换链），以及规则「突破 PTC 120 秒限制」的注入回调与还原 disposer。
+ * （记忆由 `session/event` 监听器喂，`agent/turn-stopping` 上只查记忆，旧挂载留下的记忆按挂载代号作废）、
+ * 规则 H3 的「先等官方决定」顺序与名额记账（含换模型换链；写失败不消耗名额），以及规则
+ * 「突破 PTC 120 秒限制」的注入回调与还原 disposer。
  *
  * 宿主用假 ctx（`on` 收监听器、`inject` 记下依赖组与回调（不自动回调）、`effect` 记下 disposer、
  * `get` 恒 undefined、`logger` 收口），配置按平台的 volatile 引用形状（`{ get() }`）造——顺带验证
@@ -353,6 +354,29 @@ describe('agent/turn-stopping：读记忆判定 H1 与 H2', () => {
         await expect(收尾监听器({ agent, turn: TURN })).resolves.toBeUndefined()
         expect(引导组).toHaveLength(0)
     })
+
+    it('重新挂载后旧监听器留下的同回合快照作废：不误伤，下一条消息又能正常判', async () => {
+        const 首次 = 挂载({ emptyOutputGuard: true })
+        const { agent, session, 引导组 } = 造代理()
+        // 旧监听器在回合中途留下的快照：只有思考、没有正文 —— 正是 H2 的命中形态。
+        首次.会话事件监听器(session, 造消息事件(STEP, [造思考块('只有想法')]))
+
+        // 模拟热重载：模块实例还在，监听器换了一批。
+        const 再次 = 挂载({ emptyOutputGuard: true })
+
+        await 再次.收尾监听器({ agent, turn: TURN })
+
+        expect(引导组).toHaveLength(0)
+
+        // 新监听器写下的记忆照常生效：代号只作废旧挂载留下的那份，不是把记忆功能关掉。
+        再次.会话事件监听器(session, 造消息事件(STEP, [造思考块('还是只有想法')]))
+
+        await 再次.收尾监听器({ agent, turn: TURN })
+
+        expect(引导组).toHaveLength(1)
+        const 纠正消息 = 引导组[0] as 引导消息
+        expect(纠正消息.source.summary).toBe('nudge.emptyTurn|1')
+    })
 })
 
 describe('agent/request-error：H3 的顺序与名额', () => {
@@ -469,6 +493,33 @@ describe('agent/request-error：H3 的顺序与名额', () => {
 
         const 事件数据 = 追加记录组[0].data as { policyKey: string }
         expect(JSON.parse(事件数据.policyKey)).toEqual(['harden-fallback', '-'])
+    })
+
+    it('append 抛错时放行官方决定，名额不消耗：下一次同链仍写 retry=1', async () => {
+        const { 报错监听器, 日志行组 } = 挂载({ networkRetryCount: 2 })
+        const 追加记录组: { readonly type: string; readonly data: unknown }[] = []
+        let 允许写入 = false
+        const 会话: SessionLike = {
+            append: (type: string, data: unknown): { seq: number } => {
+                if (允许写入 === false) throw Error('会话拒绝写入')
+
+                追加记录组.push({ type, data })
+                return { seq: 追加记录组.length }
+            },
+        }
+        const agent = { session: 会话, steer: (): void => {} } as unknown as AgentLike
+        const 载荷 = 造失败载荷(agent, { code: 'SERVER' })
+
+        await expect(报错监听器(载荷, 官方放弃)).resolves.toBeUndefined()
+        expect(追加记录组).toHaveLength(0)
+        expect(日志行组.some((行) => 行.includes('规则 H3 判定异常，已放行'))).toBe(true)
+
+        允许写入 = true
+
+        expect(await 报错监听器(载荷, 官方放弃)).toEqual({ kind: 'retry' })
+        const 重试事件 = 追加记录组[0].data as { retry: number }
+        expect(重试事件.retry).toBe(1)
+        expect(追加记录组.map((记录) => 记录.type)).toEqual(['llm/retry', 'llm/retry-started'])
     })
 })
 

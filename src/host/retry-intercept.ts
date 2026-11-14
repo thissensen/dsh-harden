@@ -12,14 +12,15 @@
  * 批量跑的是同一份账本）。本模块只负责「包住 `session.append` → 先喂账本 → 按结论改写或原样放行」。
  *
  * **为什么包 `session.append`**：平台重试器与本项目自己的 H3 兜底（`index.ts` 的
- * `reportRetryToSession`）都只走这一个口写重试事件。`Session.append` 是类原型方法，实例赋值可以
+ * `considerRetry`）都只走这一个口写重试事件。`Session.append` 是类原型方法，实例赋值可以
  * 覆盖；包装前先 `bind` 出原始实现，包装里调用**已绑定**的它——项目自己就是
  * `append.call(session, ...)` 形式，脱离对象调用会丢 `this`。
  *
  * **一次改写，两处落点**：内存账本（本模块的 `记录存储组`，按会话 id 走，进程重启即空）与会话日志里的
  * `plugin:` 记录（`plugin-record.ts`，持久）。日志记录**只能写在原 `append` 返回之后**（同一同步栈）：
  * 平台在另一次 append 正在发布时调 `appendPluginRecord` 会抛重入错误。只读端点按会话 id 取两处的并集，
- * 故安装拦截器时还要把会话对象登记进 `会话对象组`（端点拿它读该会话日志里的记录）；**没登记过的会话**
+ * 故安装拦截器时还要把会话对象登记进 `会话对象组`（端点拿它读该会话日志里的记录；弱引用，对象被回收就当
+ * 未登记、走冷读）；**没登记过的会话**
  * （「查看会话」不创建 agent、进程重启后该会话还没恢复）则由端点改用平台的 `ctx.sessionQuery` 冷读日志
  * （见 `取冷读记录`）——少了这条路径，日志里明明有记录、提示行也不显示。
  *
@@ -108,14 +109,17 @@ interface 冷读缓存 {
 const 冷读缓存组 = new Map<string, 冷读缓存>()
 
 /**
- * 会话对象注册表：会话 id → 会话对象。
+ * 会话对象注册表：会话 id → 会话对象（**弱引用**）。
  *
  * **为什么留会话对象**：拦截记录的另一半落在会话日志里，只读端点只有拿到会话对象才读得出来（日志按
  * 会话走）。装拦截器是唯一拿得到会话对象的地方，就在那里登记。上限口径与记录存储一致：最多
  * `记录会话上限` 个会话，**新增槽位**时超出丢最早进入的那个（覆盖已有 id 不淘汰任何人）。
  * **后装的覆盖同 id 的先前的**——同一 id 上来了更新的会话对象（热重载 / 会话重开），端点该读新的那个。
+ *
+ * **为什么存 `WeakRef`**：会话对象带着整份事件，宿主开过的会话不该被这张表钉在内存里——agent dispose
+ * 之后它就只剩这张表在引用。取不到（已被回收）就按「注册表未命中」走冷读，行为与「从没登记过」同一口径。
  */
-const 会话对象组 = new Map<string, SessionLike>()
+const 会话对象组 = new Map<string, WeakRef<SessionLike>>()
 
 /**
  * 取某个会话的拦截记录：**内存账本**这一侧的源（端点的合并读取有两处，另一处是会话日志里的 `plugin:` 记录）。
@@ -149,7 +153,7 @@ export function 获取拦截记录(会话ID: string): 拦截记录[] {
 export async function 获取全部拦截记录(会话ID: string, 会话查询?: 会话查询面): Promise<拦截记录[]> {
     const 合并组 = 获取拦截记录(会话ID)
 
-    const 会话对象 = 会话对象组.get(会话ID)
+    const 会话对象 = 会话对象组.get(会话ID)?.deref()
     if (会话对象 !== undefined) {
         并入记录(合并组, readRetryInterceptRecords(会话对象))
 
@@ -288,7 +292,7 @@ function 安装拦截器(会话: 拦截会话, logger: Logger): void {
         淘汰最早会话(会话对象组, 会话ID)
         // 平台会话一定有读取面（`snapshotEvents`）；本模块的会话面只声明了拦截器要用的写入口，
         // 这里按平台的读面类型转一次，交给 plugin-record 读日志记录。
-        会话对象组.set(会话ID, 会话 as unknown as SessionLike)
+        会话对象组.set(会话ID, new WeakRef(会话 as unknown as SessionLike))
     }
 
     const 原始append = 会话.append.bind(会话)

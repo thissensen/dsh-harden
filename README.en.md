@@ -16,8 +16,6 @@
   <a href="https://github.com/thissensen/dsh-harden">GitHub</a>
 </p>
 
-> **Status**: guard rules H1, H2 and H3 are all implemented; **the whole test suite passes**, typecheck is clean, and the build succeeds.
-
 ## What it solves
 
 A model turn should **fail loudly** when something goes wrong. But sometimes a failure is swallowed by the framework, the turn **looks like it completed normally** — and the conversation stalls with no visible explanation.
@@ -35,24 +33,22 @@ In one sentence: **an explicit failure is fine; a silent stop is not.**
 
 ## Compatibility
 
-- **DSH 0.2.2-rc.1 or newer only**: builds and tests pass on `dsh@0.2.2` rc.1 / rc.2; do not install it on an older platform.
+- **DSH 0.2.2-rc.1 or newer only**: builds and tests pass on `dsh@0.2.2-rc.3`; do not install it on an older platform.
 - **Still on DSH 0.2.1? Keep using `0.0.3`**: that version stays on npm and will not be removed.
 - **No dual-track "use it if present, silently fall back if not"**: this release calls platform interfaces that only exist in 0.2.2, so it fails outright on older versions — the plugin does not probe the platform version and has no fallback path.
 
 ## Features
 
+- **Continue after a network interruption** — after the official retry budget runs out, the plugin adds extra attempts for the failure kinds you list.
 - **Continue after a failed tool call** — when a tool call fails and the framework still treats the turn as complete, a note is injected so the model retries. (needs **Failure warning prefixes** filled in on the settings page, otherwise this rule stays off)
 - **Recover a turn that ends without any reply text** — when the last step has only reasoning, the turn is pulled back for one more step.
-- **Continue after a network interruption** — after the official retry budget runs out, the plugin adds extra attempts for the failure kinds you list.
 - **Background task tool** — gives the model a `job_background` tool to run long commands in the background without blocking the turn.
-- **Unbounded and switchable** — no cap on injections; every guard rule has its own toggle, while the write-side protection and the automatic repair for subagent sessions have no toggle and are always on.
-- **Never touches your config or patches the platform** — switches live in the platform `settings`; it only listens to public events and patches no `@deepseek-ai/*` package.
 - **One-click repair of corrupted session logs** — when a session log gets corrupted and the platform refuses to open the history, the settings page scans and repairs it in one click.
 - **Automatic context compaction** — once the conversation grows past a threshold, the older history is condensed into a summary; the UI reuses the platform's own notice.
 - **Aggregate subagent notices** — when several subagents finish in parallel, their completion notices are held back and delivered together as one message once every subagent is done, instead of waking the model one by one. Off by default.
-- **Lift the PTC program budget** — a settings toggle raises the default program budget of PTC-mode `run_code` programs from the platform's 120 seconds to the timer ceiling (about 24.8 days); turning it off or unloading the plugin restores the default. It applies to the main agent and subagents alike. **Off by default**: with a budget that large, a runaway program will not stop by itself.
 - **Automatic repair for broken subagent sessions** — fixes the case where a session suddenly refuses to open while subagents are running. The plugin corrects non-conforming retry events before they are stored; a light note appears at the end of the turn when a correction happens. Corrections are also recorded in the session log, so the note **still shows after a restart**. It is **always on and has no toggle**.
-- **Automatic cleanup of old auth cookies** — every time the UI opens, the old auth cookies piled up on the same address are deleted and only the one this page uses is kept; it acts only past 20 of them. Note that another DSH instance open at the same time (the web version, for example) gets signed out because its cookie is deleted, so it needs its launch link reopened. It only applies on local addresses such as `127.0.0.1` and `localhost`.
+- **Lift the PTC program budget** — a settings toggle raises the default program budget of PTC-mode `run_code` programs from the platform's 120 seconds to the timer ceiling (about 24.8 days); turning it off or unloading the plugin restores the default. It applies to the main agent and subagents alike. **Off by default**: with a budget that large, a runaway program will not stop by itself.
+- **Automatic cleanup of old auth cookies** — the desktop app adds one more auth cookie on every launch, and once they pile up past the browser's request-header limit the page stops loading. Every time the UI opens, the plugin deletes the cookies on the same address that do not belong to the current page and keeps only that one. **On by default**; another DSH instance open at the same time (the web version, for example) gets signed out because its cookie is deleted, so it needs its launch link reopened. Thresholds and the addresses it applies to are in the settings table below.
 
 ## Problem screenshots
 
@@ -163,9 +159,10 @@ pnpm test                      # vitest, all tests in tests/ must pass
 
 ## Design
 
-- **Public platform events only.** Rules H1 (failed tool call) and H2 (turn without a reply) hang on the serial `agent/turn-stopping` hook: as the turn is about to close it reads the last step's text, and on a hit calls `agent.steer()` to re-inject guidance. Rule H3 hangs on the waterfall `agent/request-error`: it first `await next()` so the official retry decides, and only steps in after that gives up.
+- **Public platform events only.** Rules H1 (failed tool call) and H2 (turn without a reply) hang on the serial `agent/turn-stopping` hook: as the turn is about to close it reads the last step's text, and on a hit calls `agent.steer()` to re-inject guidance. Rule H3 (network interruption) hangs on the waterfall `agent/request-error`: it first `await next()` so the official retry decides, and only steps in after that gives up.
 - **Unbounded guard rules.** A hit injects a correction note with no cap; a single counter is kept for logging only.
 - **Absent means do not interfere.** Unreadable configuration falls back to defaults; the plugin mounts without optional services.
+- **Your config stays yours.** Switches live in the platform `settings` — the plugin never writes `settings.yaml` / `cordis.patch.yml`, and it patches no `@deepseek-ai/*` package.
 
 ## License
 

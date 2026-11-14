@@ -13,7 +13,7 @@
  */
 
 declare module '@deepseek-ai/dsh-client-ui-primitives' {
-    import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactElement, ReactNode } from 'react'
+    import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactElement, ReactNode } from 'react'
 
     /** 按钮：`icon` 是可选的行首图标节点；其余原生 button 属性透传。 */
     export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -107,7 +107,6 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
         dense?: boolean
         compact?: boolean
         selection?: 'check' | 'fill'
-        getAnchorRect?: () => DOMRect | null
         className?: string
         listClassName?: string
     }
@@ -116,10 +115,4 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
     /** 下拉锚点尾部那只朝下的箭头（展开时由调用方换向上箭头，这里只声明两只）。 */
     export const IconChevronDownOutlineRegular: (props: IconProps) => ReactElement
     export const IconChevronUpOutlineRegular: (props: IconProps) => ReactElement
-
-    /** 平台「下拉锚点」常用的菜单面板外壳（本项目未用到，声明留给后续）。 */
-    export interface MenuSurfaceProps extends HTMLAttributes<HTMLDivElement> {
-        compact?: boolean
-    }
-    export const MenuSurface: (props: MenuSurfaceProps) => ReactElement
 }

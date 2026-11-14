@@ -8,6 +8,8 @@
  * **写回是乐观的、可回滚的。** 改动立刻上屏，POST 失败就退回原值并把原因摆出来
  * ——不让用户对着一个「改了但没生效」的假象。busy 期间控件禁用，防重入。
  *
+ * **输入框草稿只在写回成功后清除**：写回失败时草稿留在框里（用户定稿），免得用户重打一遍。
+ *
  * **组件直接用平台官方 primitives**（`@deepseek-ai/dsh-client-ui-primitives`），
  * 不手写 switch/button/input：官方变了我跟着变。样式走 `--dsw-alias-*` 主题 token，不写死颜色。
  *
@@ -219,7 +221,8 @@ export function HardenPanel(props: PanelProps): ReactElement {
 
             // 字段缺失或不是非空字符串时按失败处理：拿不到版本号就下不了「有没有新版」的结论。
             if (typeof 最新版本 !== 'string' || 最新版本.length === 0) {
-                throw Error('panel.latestVersionMissing')
+                setUpdateState({ phase: 'failed' })
+                return
             }
 
             setUpdateState(
@@ -240,9 +243,10 @@ export function HardenPanel(props: PanelProps): ReactElement {
      * 写回的是整份配置——端点按完整快照校验，缺字段会被拒。
      *
      * @param patch - 要改的字段。
+     * @returns 是否确实写回成功；未就绪 / 有写回在飞 / 写回失败都是 false——调用方据此决定草稿去留。
      */
-    async function applyPatch(patch: Partial<HardenSettings>): Promise<void> {
-        if (state.status !== 'ready' || busy) return
+    async function applyPatch(patch: Partial<HardenSettings>): Promise<boolean> {
+        if (state.status !== 'ready' || busy) return false
 
         const previous = state.settings
         const optimistic: HardenSettings = { ...previous, ...patch }
@@ -255,12 +259,16 @@ export function HardenPanel(props: PanelProps): ReactElement {
             await postJson(CONFIG_ENDPOINT, optimistic)
             setNotice({ kind: 'ok', text: t('common.saved') })
 
+            return true
+
         } catch (error) {
             setState({ status: 'ready', settings: previous })
             setNotice({
                 kind: 'error',
                 text: `${t('common.saveFailed')}：${translateHostText(t, messageOf(error))}`,
             })
+
+            return false
 
         } finally {
             setBusy(false)
@@ -348,14 +356,14 @@ function checkLabel(t: PlatformTranslate, updateState: UpdateState): string {
  * @param state - 加载状态。
  * @param t - 翻译函数。
  * @param busy - 是否有写回在飞。
- * @param onPatch - 配置补丁写回。
+ * @param onPatch - 配置补丁写回；返回是否写回成功（输入框草稿的去留看它）。
  * @param onRetry - 读取失败后的重试。
  */
 function renderBody(
     state: LoadState,
     t: PlatformTranslate,
     busy: boolean,
-    onPatch: (patch: Partial<HardenSettings>) => Promise<void>,
+    onPatch: (patch: Partial<HardenSettings>) => Promise<boolean>,
     onRetry: () => void,
 ): ReactElement {
     if (state.status === 'loading') {
@@ -429,15 +437,7 @@ function renderBody(
                 'div',
                 { style: ROW },
                 createElement('span', { style: CARD_TITLE }, t('rule.retryIntercept.title')),
-                createElement(Tooltip, {
-                    label: t('rule.retryIntercept.help'),
-                    side: 'bottom',
-                    children: createElement(
-                        'span',
-                        { style: HELP_ANCHOR },
-                        createElement(IconQuestionOutlineRegular, { size: 14 }),
-                    ),
-                }),
+                renderHelpAnchor(t('rule.retryIntercept.help')),
                 createElement('span', { style: SPACER }),
                 createElement('span', { style: FORCED_LABEL }, t('rule.retryIntercept.forced')),
             ),
@@ -495,17 +495,7 @@ function renderSwitchCard(props: SwitchCardProps): ReactElement {
             'div',
             { style: ROW },
             createElement('span', { style: CARD_TITLE }, props.title),
-            // Tooltip 要 clone 它的 children 来挂锚点，所以锚点元素必须放进 props.children——
-            // 走 createElement 的第三参数会被 React 的类型判成「P 里必填的 children 没给」。
-            createElement(Tooltip, {
-                label: props.help,
-                side: 'bottom',
-                children: createElement(
-                    'span',
-                    { style: HELP_ANCHOR },
-                    createElement(IconQuestionOutlineRegular, { size: 14 }),
-                ),
-            }),
+            renderHelpAnchor(props.help),
             createElement('span', { style: SPACER }),
             createElement(Switch, {
                 checked: props.checked,
@@ -644,15 +634,7 @@ function SessionRepairCard(props: SessionRepairCardProps): ReactElement {
             'div',
             { style: ROW },
             createElement('span', { style: CARD_TITLE }, props.t('repair.title')),
-            createElement(Tooltip, {
-                label: props.t('repair.help'),
-                side: 'bottom',
-                children: createElement(
-                    'span',
-                    { style: HELP_ANCHOR },
-                    createElement(IconQuestionOutlineRegular, { size: 14 }),
-                ),
-            }),
+            renderHelpAnchor(props.t('repair.help')),
             createElement('span', { style: SPACER }),
             createElement(
                 Button,
@@ -677,7 +659,7 @@ interface ToolFailureCardProps {
     settings: HardenSettings
     t: PlatformTranslate
     busy: boolean
-    onPatch: (patch: Partial<HardenSettings>) => Promise<void>
+    onPatch: (patch: Partial<HardenSettings>) => Promise<boolean>
 }
 
 /**
@@ -697,15 +679,17 @@ function ToolFailureCard(props: ToolFailureCardProps): ReactElement {
 
     const prefixesText = prefixesDraft ?? props.settings.toolFailurePrefixes
 
-    /** 提交失败提示前缀：等于原值就不发请求。 */
+    /** 提交失败提示前缀：等于原值就不发请求；写回成功才丢草稿，失败留着让用户再提交一次。 */
     async function commitPrefixes(): Promise<void> {
         if (prefixesDraft === null) return
 
-        setPrefixesDraft(null)
+        if (prefixesDraft === props.settings.toolFailurePrefixes) {
+            setPrefixesDraft(null)
+            return
+        }
 
-        if (prefixesDraft === props.settings.toolFailurePrefixes) return
-
-        await props.onPatch({ toolFailurePrefixes: prefixesDraft })
+        const 是否已写回 = await props.onPatch({ toolFailurePrefixes: prefixesDraft })
+        if (是否已写回) setPrefixesDraft(null)
     }
 
     /** 切换规则 H1 开关。 */
@@ -736,15 +720,7 @@ function ToolFailureCard(props: ToolFailureCardProps): ReactElement {
             'div',
             { style: ROW },
             createElement('span', { style: CARD_TITLE }, props.t('rule.toolFailureGuard.title')),
-            createElement(Tooltip, {
-                label: props.t('rule.toolFailureGuard.help'),
-                side: 'bottom',
-                children: createElement(
-                    'span',
-                    { style: HELP_ANCHOR },
-                    createElement(IconQuestionOutlineRegular, { size: 14 }),
-                ),
-            }),
+            renderHelpAnchor(props.t('rule.toolFailureGuard.help')),
             createElement('span', { style: SPACER }),
             createElement(Switch, {
                 checked: props.settings.toolFailureGuard,
@@ -765,7 +741,7 @@ interface NetworkRetryCardProps {
     settings: HardenSettings
     t: PlatformTranslate
     busy: boolean
-    onPatch: (patch: Partial<HardenSettings>) => Promise<void>
+    onPatch: (patch: Partial<HardenSettings>) => Promise<boolean>
 }
 
 /**
@@ -784,29 +760,33 @@ function NetworkRetryCard(props: NetworkRetryCardProps): ReactElement {
     const countText = countDraft ?? String(props.settings.networkRetryCount)
     const tokensText = tokensDraft ?? props.settings.networkRetryTokens
 
-    /** 提交重试次数：草稿非法就丢弃，等于原值就不发请求。 */
+    /** 提交重试次数：草稿非法或等于原值就丢弃，写回成功才丢草稿。 */
     async function commitCount(): Promise<void> {
         if (countDraft === null) return
 
-        setCountDraft(null)
-
         const parsed = Number.parseInt(countDraft, 10)
         const inRange = parsed >= RETRY_COUNT_MIN && parsed <= RETRY_COUNT_MAX
-        if (Number.isInteger(parsed) === false || inRange === false) return
-        if (parsed === props.settings.networkRetryCount) return
+        const 是否需要写回 = Number.isInteger(parsed) && inRange && parsed !== props.settings.networkRetryCount
+        if (是否需要写回 === false) {
+            setCountDraft(null)
+            return
+        }
 
-        await props.onPatch({ networkRetryCount: parsed })
+        const 是否已写回 = await props.onPatch({ networkRetryCount: parsed })
+        if (是否已写回) setCountDraft(null)
     }
 
-    /** 提交失败特征：等于原值就不发请求。 */
+    /** 提交失败特征：等于原值就不发请求；写回成功才丢草稿，失败留着让用户再提交一次。 */
     async function commitTokens(): Promise<void> {
         if (tokensDraft === null) return
 
-        setTokensDraft(null)
+        if (tokensDraft === props.settings.networkRetryTokens) {
+            setTokensDraft(null)
+            return
+        }
 
-        if (tokensDraft === props.settings.networkRetryTokens) return
-
-        await props.onPatch({ networkRetryTokens: tokensDraft })
+        const 是否已写回 = await props.onPatch({ networkRetryTokens: tokensDraft })
+        if (是否已写回) setTokensDraft(null)
     }
 
     const countInput = createElement(Input, {
@@ -836,15 +816,7 @@ function NetworkRetryCard(props: NetworkRetryCardProps): ReactElement {
             'div',
             { style: ROW },
             createElement('span', { style: CARD_TITLE }, props.t('rule.networkRetry.title')),
-            createElement(Tooltip, {
-                label: props.t('rule.networkRetry.help'),
-                side: 'bottom',
-                children: createElement(
-                    'span',
-                    { style: HELP_ANCHOR },
-                    createElement(IconQuestionOutlineRegular, { size: 14 }),
-                ),
-            }),
+            renderHelpAnchor(props.t('rule.networkRetry.help')),
         ),
         createElement('div', { style: CARD_DESC }, props.t('rule.networkRetry.desc')),
         renderFieldRow(props.t, 'field.retryCount', countInput),
@@ -857,7 +829,7 @@ interface CompactionCardProps {
     settings: HardenSettings
     t: PlatformTranslate
     busy: boolean
-    onPatch: (patch: Partial<HardenSettings>) => Promise<void>
+    onPatch: (patch: Partial<HardenSettings>) => Promise<boolean>
 }
 
 /**
@@ -883,27 +855,31 @@ function CompactionCard(props: CompactionCardProps): ReactElement {
 
     const thresholdInvalid = 解析压缩阈值(thresholdText) === null
 
-    /** 提交触发阈值：非法就丢弃，等于原值就不发请求。 */
+    /** 提交触发阈值：非法或等于原值就丢弃，写回成功才丢草稿。 */
     async function commitThreshold(): Promise<void> {
         if (thresholdDraft === null) return
 
-        setThresholdDraft(null)
+        const 是否需要写回 = 解析压缩阈值(thresholdDraft) !== null && thresholdDraft !== props.settings.compactionThreshold
+        if (是否需要写回 === false) {
+            setThresholdDraft(null)
+            return
+        }
 
-        if (解析压缩阈值(thresholdDraft) === null) return
-        if (thresholdDraft === props.settings.compactionThreshold) return
-
-        await props.onPatch({ compactionThreshold: thresholdDraft })
+        const 是否已写回 = await props.onPatch({ compactionThreshold: thresholdDraft })
+        if (是否已写回) setThresholdDraft(null)
     }
 
-    /** 提交摘要指令：等于原值就不发请求。 */
+    /** 提交摘要指令：等于原值就不发请求；写回成功才丢草稿，失败留着让用户再提交一次。 */
     async function commitInstruction(): Promise<void> {
         if (instructionDraft === null) return
 
-        setInstructionDraft(null)
+        if (instructionDraft === props.settings.compactionInstruction) {
+            setInstructionDraft(null)
+            return
+        }
 
-        if (instructionDraft === props.settings.compactionInstruction) return
-
-        await props.onPatch({ compactionInstruction: instructionDraft })
+        const 是否已写回 = await props.onPatch({ compactionInstruction: instructionDraft })
+        if (是否已写回) setInstructionDraft(null)
     }
 
     /** 切换上下文自动压缩开关。 */
@@ -1002,15 +978,7 @@ function CompactionCard(props: CompactionCardProps): ReactElement {
             'div',
             { style: ROW },
             createElement('span', { style: CARD_TITLE }, props.t('rule.contextCompaction.title')),
-            createElement(Tooltip, {
-                label: props.t('rule.contextCompaction.help'),
-                side: 'bottom',
-                children: createElement(
-                    'span',
-                    { style: HELP_ANCHOR },
-                    createElement(IconQuestionOutlineRegular, { size: 14 }),
-                ),
-            }),
+            renderHelpAnchor(props.t('rule.contextCompaction.help')),
             createElement('span', { style: SPACER }),
             createElement(Switch, {
                 checked: props.settings.contextCompaction,
@@ -1045,18 +1013,33 @@ function renderFieldRow(t: PlatformTranslate, keyBase: string, control: ReactEle
         'div',
         { style: ROW },
         createElement('span', { style: FIELD_LABEL }, t(`${keyBase}.title`)),
-        createElement(Tooltip, {
-            label: t(`${keyBase}.help`),
-            side: 'bottom',
-            children: createElement(
-                'span',
-                { style: HELP_ANCHOR },
-                createElement(IconQuestionOutlineRegular, { size: 14 }),
-            ),
-        }),
+        renderHelpAnchor(t(`${keyBase}.help`)),
         createElement('span', { style: SPACER }),
         createElement('div', { style: FIELD_SLOT }, control),
     )
+}
+
+/**
+ * 卡片/字段行尾的问号说明锚点。
+ *
+ * 锚点必须可聚焦：平台 `Tooltip` 只在锚点收到 focus 时才弹气泡、并把说明挂成 `aria-describedby`，
+ * 不可聚焦的 `span` 拿不到这条通道（键盘与读屏用户读不到卡片说明）。
+ *
+ * 锚点元素必须放进 `props.children`：`Tooltip` 靠 clone 它来注入 `ref` 与事件，走 `createElement`
+ * 的第三参数会被 React 的类型判成「`P` 里必填的 children 没给」。
+ *
+ * @param help - 该处说明文案（同时做无障碍名）。
+ */
+function renderHelpAnchor(help: string): ReactElement {
+    return createElement(Tooltip, {
+        label: help,
+        side: 'bottom',
+        children: createElement(
+            'span',
+            { style: HELP_ANCHOR, tabIndex: 0, role: 'img', 'aria-label': help },
+            createElement(IconQuestionOutlineRegular, { size: 14 }),
+        ),
+    })
 }
 
 // ── 样式（全走主题 token，不写死颜色）────────────────────────────────────

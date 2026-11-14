@@ -1,26 +1,29 @@
 /**
- * 会话修复模块 —— 扫描会话文件、判定好坏、在内存里修两类已知的损坏形态（重试链规范化 +
- * 序号范围编码展开）、过平台校验才落盘。
+ * 会话修复模块 —— 扫描会话文件、读完先归一、判定好坏、在内存里修已知的损坏形态（重试链规范化）、
+ * 过平台校验才落盘。
  *
  * **背景。** 会话持久化文件是「多帧 zstd 串联」的 JSONL：首行是 `type: "session"` 的
  * header，其余每行一条会话事件。平台读取时会用 `restoreReleasedV4Artifact` 做一次严格
- * 校验，遇到这两类损坏形态会整份拒读：
+ * 校验，遇到损坏形态会整份拒读。两份输入要区别对待：
  *
- * - **重试链异常**：同一 policy chain（turn + step + provider + policyKey 四元组）内 retry
+ * - **`sourceEventSeqs` 的序号范围编码是合法存储形态，不是损坏。** 平台把连续段（≥3 条）编码成
+ *   `[start, end]` 写进 JSONL，读路径先 `decodeSeqRanges(value, event.seq)` 展开再交给校验器；
+ *   校验器本身只认扁平整数。我们拿 JSONL 原始行直接校验，所以首检不过时要先补上这一步再判一次
+ *   （`expandSourceEventSeqs`）——照原始行直接判会把平台自己写出的合法文件判成损坏，每次扫描都
+ *   白重写一遍。
+ * - **重试链异常是损坏**：同一 policy chain（turn + step + provider + policyKey 四元组）内 retry
  *   编号重复或跳号、整条链的 retryId 不一致，或者序号重排后 `normal` 模式的 `maxRetries`
  *   不够用。这种形态的来源是平台自带重试器写出重复的序号（校验报
  *   llm/retry skips its policy attempt sequence）与本插件早期版本的兜底重试每次换新 id
  *   （校验报 llm/retry must keep one retryId per policy chain）。
- * - **sourceEventSeqs 序号范围编码**：`sourceEventSeqs` 里允许写 `[start, end]`
- *   形式的子数组；校验器只认扁平数字，遇到范围就不解码。
  *
- * 本模块在**内存里**修好这两类损坏形态：先把重试链**规范化**（交给 `retry-chain-ledger.ts` 的
- * 重试链账本：同链 retry 编号按出现顺序重排 1..n、整链 retryId 归并成第一条、配对的
- * `llm/retry-started` 按 (retryId, retry) 同步改写，并把 `normal` 模式的 `maxRetries` 抬到
- * 不小于本条序号——真机样本 `dfd3eb08…` 同链两条 `retry = 1` 且 `maxRetries = 1`，序号重排
- * 成 2 后不改它仍会被平台拒），再**展开**序号范围编码。只有**修完再校验通过**才写回磁盘；写回用
- * 「临时文件 + rename」原子替换，任何一步失败都不落盘。展开有单条范围上界
- * （`SEQ_RANGE_MAX_SPAN`）：损伤值跨 5E7 时不展开、报「修不了」，免得同步卡住宿主进程。
+ * 本模块在**内存里**修好重试链（交给 `retry-chain-ledger.ts` 的重试链账本：同链 retry 编号按出现
+ * 顺序重排 1..n、整链 retryId 归并成第一条、配对的 `llm/retry-started` 按 (retryId, retry) 同步
+ * 改写，并把 `normal` 模式的 `maxRetries` 抬到不小于本条序号——真机样本 `dfd3eb08…` 同链两条
+ * `retry = 1` 且 `maxRetries = 1`，序号重排成 2 后不改它仍会被平台拒）。只有**修完再校验通过**
+ * 才写回磁盘；写回只重新序列化被改写过的行（其余行原样拼回），用「临时文件 + fsync + rename」
+ * 原子替换，任何一步失败都不落盘。展开有单条范围上界（`SEQ_RANGE_MAX_SPAN`）与整份日志的累计
+ * 上界（`SEQ_RANGE_MAX_TOTAL`）：损伤值跨 5E7 时不展开、报「修不了」，免得同步卡住宿主进程。
  *
  * **平台包按两个候选定位。** 三个平台包（持久化 jsonl / v3-to-v4 格式 / session 事件表）不写死
  * 绝对路径：先 resolve 一个能解析到的包，再从它的入口路径派生出 `@deepseek-ai` 目录，按同级
@@ -42,7 +45,7 @@ import { randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { constants, zstdCompressSync, zstdDecompressSync } from 'node:zlib'
 import { existsSync } from 'node:fs'
-import { readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { open, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
 import { join, sep } from 'node:path'
 
 import { errText } from './shared-format.js'
@@ -72,8 +75,13 @@ const 插件require = createRequire(import.meta.url)
 /** 修复结果的状态。 */
 export type RepairStatus = 'intact' | 'repaired' | 'unrepairable' | 'read-failed'
 
-/** 实际改动的类别。 */
-export type RepairCategory = 'retry-chain-normalized' | 'sourceEventSeqs-expanded'
+/**
+ * 实际改动的类别。
+ *
+ * 重试链规范化是唯一的修复类别：序号范围编码是平台自己的合法存储形态，展开只是读路径归一，
+ * 不算「改动」。
+ */
+export type RepairCategory = 'retry-chain-normalized'
 
 /** 单个会话文件的修复结果。 */
 export interface RepairOutcome {
@@ -102,8 +110,26 @@ interface ZstdFrame {
 interface DecodedSession {
     /** 全部行，首行是 header。 */
     lines: unknown[]
+    /** 每行的原始文本（写回时未改动的行原样拼回，避免 JSON 往返改写数字字面量）。 */
+    行文本组: string[]
     /** 每一帧的明文行数，编码时按它重新切帧。 */
     frameLineCounts: number[]
+}
+
+/** 判断「读到的还是不是磁盘上那份」用的签名：大小 + mtime。 */
+interface 文件签名 {
+    大小: number
+    修改时间: number
+}
+
+/**
+ * 读文件签名。
+ *
+ * @param 文件路径 - 会话文件路径。
+ */
+async function 获取文件签名(文件路径: string): Promise<文件签名> {
+    const info = await stat(文件路径)
+    return { 大小: info.size, 修改时间: info.mtimeMs }
 }
 
 /**
@@ -133,9 +159,10 @@ export async function scanSessionFiles(会话根目录: string): Promise<string[
 /**
  * 修复单个会话文件。
  *
- * 流程：读文件 → 解码帧 → 拆 header/事件 → 平台校验 → 好则报「无需修复」，坏则依次尝试
- * 重试链规范化与序号范围编码展开 → 改后再校验 → 过了才写回，不过则不落盘。
- * 校验不通过时把平台的原话带进 reason，便于判断损坏形态。
+ * 流程：读文件 → 解码帧 → 拆 header/事件 → 平台校验 → 好则报「无需修复」；不过时先展开序号范围
+ * 编码（平台读路径的等价物）再判一次，仍不过才做重试链规范化 → 改后再校验 → 过了才写回，不过则
+ * 不落盘。校验不通过时把平台的原话带进 reason，便于判断损坏形态。写回前比对文件签名：读完之后被
+ * 平台改写过就不落盘（否则等于把读时快照盖回去、丢掉新事件）。
  *
  * 读、解码、拆解任一步失败都只算**这一个文件**失败（报 read-failed，异常不外抛）——异常逃出去
  * 会让整个扫描端点 400 空响应，一个坏文件把其余会话全拖下水。
@@ -146,7 +173,9 @@ export async function scanSessionFiles(会话根目录: string): Promise<string[
  */
 export async function repairSessionFile(文件路径: string, 校验器?: SessionValidator): Promise<RepairOutcome> {
     let 文件内容: Buffer
+    let 读取前签名: 文件签名
     try {
+        读取前签名 = await 获取文件签名(文件路径)
         文件内容 = await readFile(文件路径)
 
     } catch (err) {
@@ -182,9 +211,9 @@ export async function repairSessionFile(文件路径: string, 校验器?: Sessio
         return { filePath: 文件路径, status: 'intact', reason: '校验通过，无需修复', changedCategories: [] }
     }
 
-    const 改动类别组: RepairCategory[] = []
-    if (normalizeRetryChain(拆解结果.events)) 改动类别组.push('retry-chain-normalized')
-
+    // 平台把 sourceEventSeqs 的连续段编码成 [start, end] 存进 JSONL，读路径先 decode 再交给校验器；
+    // 校验器自己只认扁平整数。照原始行直接判会把平台自己写出的合法文件判成损坏（每次扫描都白重写），
+    // 所以首检不过时补上这一步再判一次。
     const 展开结果 = expandSourceEventSeqs(拆解结果.events)
     if (展开结果.放弃原因 !== null) {
         return {
@@ -194,16 +223,23 @@ export async function repairSessionFile(文件路径: string, 校验器?: Sessio
             changedCategories: [],
         }
     }
-    if (展开结果.有改动) 改动类别组.push('sourceEventSeqs-expanded')
 
-    if (改动类别组.length === 0) {
+    const 展开后首检 = 展开结果.有改动 ? 跑校验(实际校验器, 拆解结果.header, 拆解结果.events) : 首检
+    if (展开后首检.通过) {
+        return { filePath: 文件路径, status: 'intact', reason: '校验通过，无需修复', changedCategories: [] }
+    }
+
+    const 改动事件下标组 = normalizeRetryChain(拆解结果.events)
+    if (改动事件下标组.length === 0) {
         return {
             filePath: 文件路径,
             status: 'unrepairable',
-            reason: `校验失败（${首检.原因}），且不属于已知的可修类别`,
+            reason: `校验失败（${展开后首检.原因}），且不属于已知的可修类别`,
             changedCategories: [],
         }
     }
+
+    const 改动类别组: RepairCategory[] = ['retry-chain-normalized']
 
     const 复检 = 跑校验(实际校验器, 拆解结果.header, 拆解结果.events)
     if (复检.通过 === false) {
@@ -215,10 +251,38 @@ export async function repairSessionFile(文件路径: string, 校验器?: Sessio
         }
     }
 
+    // 只重新序列化被改写的行：JSON 往返会把 >2^53 的整数、特殊数字写法改写成另一种文本，
+    // 未改动的行必须原样拼回，磁盘字节才保真。events 是 lines.slice(1)，事件下标 + 1 即行下标。
+    const 行文本组 = [...解码结果.行文本组]
+    for (const index of 改动事件下标组) 行文本组[index + 1] = JSON.stringify(拆解结果.events[index])
+    const 写回字节 = encodeSessionFile(行文本组, 解码结果.frameLineCounts)
+
+    // 平台写手是逐批 open→write→fsync→close（句柄只存在几毫秒），rename 未必撞 EPERM；
+    // 读完之后它可能又追加了事件，此时把读时快照盖回去就是丢事件、seq 断档，会话永久打不开。
+    // 比对放在编码之后、写临时文件之前：编码是最耗时的一步，此后只剩几毫秒的窗口。
+    const 写回前签名 = await 获取文件签名(文件路径)
+    const 是否未变 = 写回前签名.大小 === 读取前签名.大小 && 写回前签名.修改时间 === 读取前签名.修改时间
+    if (是否未变 === false) {
+        return {
+            filePath: 文件路径,
+            status: 'read-failed',
+            reason: '会话文件在修复期间被改写（会话可能仍活跃），已放弃写回',
+            changedCategories: [],
+        }
+    }
+
     // 临时名带随机后缀：两次点击或两个标签页并发修同一个文件时不能共用同一个临时路径。
     const 临时路径 = `${文件路径}.${randomBytes(6).toString('hex')}.tmp`
     try {
-        await writeFile(临时路径, encodeSessionFile(解码结果.lines, 解码结果.frameLineCounts))
+        // 平台自己写盘是写穿 + 每批 sync；不 fsync 就 rename，掉电可能留下 0 字节的会话文件。
+        const 句柄 = await open(临时路径, 'w')
+        try {
+            await 句柄.writeFile(写回字节)
+            await 句柄.sync()
+
+        } finally {
+            await 句柄.close()
+        }
         await rename(临时路径, 文件路径)
 
     } catch (err) {
@@ -246,14 +310,14 @@ export async function repairSessionFile(文件路径: string, 校验器?: Sessio
  * started 不带 provider/policyKey，平台只按 (retryId, retry) 配对）。
  *
  * @param events - 会话事件组（会被原地修改）。
- * @returns 是否真的改动了内容。
+ * @returns 被改写的事件下标组（空数组 = 没改动）；写回时按它决定哪些行需要重新序列化。
  */
-export function normalizeRetryChain(events: unknown[]): boolean {
+export function normalizeRetryChain(events: unknown[]): number[] {
     // 账本有状态：修一份新日志必须换一个新实例。
     const 账本 = new 重试链账本()
-    let 有改动 = false
+    const 改动下标组: number[] = []
 
-    for (const event of events) {
+    for (const [index, event] of events.entries()) {
         const 类型 = 读事件类型(event)
         if (类型 !== 'llm/retry' && 类型 !== 'llm/retry-started') continue
         const data = 读事件数据(event)
@@ -265,14 +329,22 @@ export function normalizeRetryChain(events: unknown[]): boolean {
         data.retryId = 结论.retryId
         data.retry = 结论.retry
         if (结论.maxRetries !== undefined) data.maxRetries = 结论.maxRetries
-        有改动 = true
+        改动下标组.push(index)
     }
 
-    return 有改动
+    return 改动下标组
 }
 
 /** 单条序号范围的展开上界：损伤值可能跨 5E7，展开会同步阻塞整个宿主进程。 */
 const SEQ_RANGE_MAX_SPAN = 100_000
+
+/** 整份日志的累计展开上界（与单条同口径）：N 条各跨 10 万时总量无界，同样会卡住宿主进程。 */
+const SEQ_RANGE_MAX_TOTAL = 100_000
+
+/** 一次展开用的累计预算（跨事件、跨字段共享）。 */
+interface 展开预算 {
+    剩余条数: number
+}
 
 /** 序号范围展开的结果。 */
 export interface SeqsExpandOutcome {
@@ -285,16 +357,17 @@ export interface SeqsExpandOutcome {
 /**
  * 序号范围编码展开：遍历所有事件，把 `sourceEventSeqs` 里的 `[start, end]` 展开成扁平数字。
  *
- * 范围跨度超过 `SEQ_RANGE_MAX_SPAN` 时立刻带原因返回，不展开——损伤值展开 5E7 个数会同步
- * 卡住宿主事件循环，比「修不了」严重得多。
+ * 范围跨度超过 `SEQ_RANGE_MAX_SPAN`、或整份日志累计超过 `SEQ_RANGE_MAX_TOTAL` 时立刻带原因
+ * 返回，不展开——损伤值展开 5E7 个数会同步卡住宿主事件循环，比「修不了」严重得多。
  *
  * @param events - 会话事件组（会被原地修改）。
  * @returns 展开结果：是否改了内容，以及遇到跨度过大的范围时放弃的原因。
  */
 export function expandSourceEventSeqs(events: unknown[]): SeqsExpandOutcome {
+    const 预算: 展开预算 = { 剩余条数: SEQ_RANGE_MAX_TOTAL }
     let 有改动 = false
     for (const event of events) {
-        const 子结果 = 展开节点内序号范围(event, 'sourceEventSeqs')
+        const 子结果 = 展开节点内序号范围(event, 'sourceEventSeqs', 预算)
         if (子结果.放弃原因 !== null) return 子结果
         if (子结果.有改动) 有改动 = true
     }
@@ -356,8 +429,8 @@ function scanZstdFrames(buffer: Buffer): { frames: ZstdFrame[]; tornStart: numbe
 /**
  * 把多帧 zstd 文件解码成行数组。
  *
- * 每帧独立解压，明文按顺序拼接后按换行切行；同时记下每帧的明文行数，编码时按相同行数
- * 还原帧结构（修复只改字段值、不改行数）。
+ * 每帧独立解压，明文按顺序拼接后按换行切行；同时记下每帧的明文行数与每行的原始文本——前者让
+ * 编码时按相同行数还原帧结构（修复只改字段值、不改行数），后者让未改动的行原样拼回。
  *
  * @param content - 会话文件原始字节。
  */
@@ -366,28 +439,32 @@ function decodeSessionFile(content: Buffer): DecodedSession {
     if (tornStart !== null) throw new Error(`会话文件末尾残缺（第 ${tornStart} 字节起）`)
 
     const lines: unknown[] = []
+    const 行文本组: string[] = []
     const frameLineCounts: number[] = []
     for (const frame of frames) {
         const plainText = zstdDecompressSync(content.subarray(frame.start, frame.end)).toString('utf8')
         const 分段组 = plainText.split('\n')
         if (分段组[分段组.length - 1] === '') 分段组.pop()
-        for (const line of 分段组) lines.push(JSON.parse(line))
+        for (const line of 分段组) {
+            lines.push(JSON.parse(line))
+            行文本组.push(line)
+        }
         frameLineCounts.push(分段组.length)
     }
-    return { lines, frameLineCounts }
+    return { lines, 行文本组, frameLineCounts }
 }
 
 /**
- * 把行数组编码回多帧 zstd。
+ * 把行文本组编码回多帧 zstd。
  *
  * 按解码时记录的每帧行数切分，每一帧都带 checksum，帧边界与原文件一致。行数对不上时把
- * 余下所有行压成最后一帧（兜底，正常不会走到）。
+ * 余下所有行压成最后一帧（兜底，正常不会走到）。只收文本：改动的行由调用方重新序列化，
+ * 未改动的行原样拼回。
  *
- * @param lines - 全部行（含 header）。
+ * @param 行文本组 - 全部行的文本（含 header）。
  * @param frameLineCounts - 每帧明文行数。
  */
-function encodeSessionFile(lines: unknown[], frameLineCounts: number[]): Buffer {
-    const 行文本组 = lines.map((line) => JSON.stringify(line))
+function encodeSessionFile(行文本组: string[], frameLineCounts: number[]): Buffer {
     const 帧缓冲组: Buffer[] = []
     let 游标 = 0
     for (const 帧行数 of frameLineCounts) {
@@ -444,14 +521,15 @@ function 读事件数据(event: unknown): Record<string, unknown> | null {
  *
  * @param node - 待检查的节点。
  * @param 字段名 - 要展开的字段名。
+ * @param 预算 - 本次展开的累计条数预算（跨事件共享，展开时扣减）。
  * @returns 展开结果：是否真的改动了内容，以及放弃原因。
  */
-function 展开节点内序号范围(node: unknown, 字段名: string): SeqsExpandOutcome {
+function 展开节点内序号范围(node: unknown, 字段名: string, 预算: 展开预算): SeqsExpandOutcome {
     if (node === null || typeof node !== 'object') return { 有改动: false, 放弃原因: null }
     if (Array.isArray(node)) {
         let 有改动 = false
         for (const 子项 of node) {
-            const 子结果 = 展开节点内序号范围(子项, 字段名)
+            const 子结果 = 展开节点内序号范围(子项, 字段名, 预算)
             if (子结果.放弃原因 !== null) return 子结果
             if (子结果.有改动) 有改动 = true
         }
@@ -477,6 +555,13 @@ function 展开节点内序号范围(node: unknown, 字段名: string): SeqsExpa
                             放弃原因: `sourceEventSeqs 的序号范围 [${起始序号}, ${结束序号}] 跨度过大（上限 ${SEQ_RANGE_MAX_SPAN}），展开会卡住进程`,
                         }
                     }
+                    if (跨度 > 预算.剩余条数) {
+                        return {
+                            有改动: false,
+                            放弃原因: `sourceEventSeqs 的累计跨度超过上限（${SEQ_RANGE_MAX_TOTAL} 条），展开会卡住进程`,
+                        }
+                    }
+                    预算.剩余条数 -= 跨度
                     for (let 序号 = 起始序号; 序号 <= 结束序号; 序号 += 1) 展开组.push(序号)
                     有展开 = true
                     continue
@@ -489,7 +574,7 @@ function 展开节点内序号范围(node: unknown, 字段名: string): SeqsExpa
             }
             continue
         }
-        const 子结果 = 展开节点内序号范围(字段值, 字段名)
+        const 子结果 = 展开节点内序号范围(字段值, 字段名, 预算)
         if (子结果.放弃原因 !== null) return 子结果
         if (子结果.有改动) 有改动 = true
     }

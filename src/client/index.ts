@@ -30,7 +30,7 @@
 import { createElement } from 'react'
 import type { ReactElement } from 'react'
 import { 触发旧认证Cookie清理 } from './auth-cookie-sweep'
-import { en, LOCALE_NS, translateZh, zh } from './locales'
+import { en, LOCALE_NS, zh } from './locales'
 import type { PlatformTranslate } from './locales'
 import { NudgeRow } from './parts/nudge-row'
 import type { NudgeRowProps } from './parts/nudge-row'
@@ -166,7 +166,8 @@ interface ConversationEventDefinition {
 /** 平台会话服务里本壳用到的部分。 */
 interface ConversationService {
     events: {
-        register(definition: ConversationEventDefinition): void
+        /** 授权给调用方 ctx 的幂等 disposer：`apply` 再跑一遍时不收回就等于重复 key（平台会抛）。 */
+        register(definition: ConversationEventDefinition): () => void
     }
 }
 
@@ -333,12 +334,12 @@ export function apply(ctx: ClientContext): void {
                 label: () => t('shell.sectionLabel'),
                 inject: () => ({}),
             },
-            (props) => createElement(HardenPanel, { t: props.t ?? translateZh() }),
+            (props) => createElement(HardenPanel, { t: props.t }),
         )
     })
 
-    ctx.uiConversation.events.register(HARDEN_NUDGE_DEFINITION)
-    ctx.uiConversation.events.register(HARDEN_PROGRESS_DEFINITION)
+    ctx.effect(() => ctx.uiConversation.events.register(HARDEN_NUDGE_DEFINITION), 'harden: nudge row node')
+    ctx.effect(() => ctx.uiConversation.events.register(HARDEN_PROGRESS_DEFINITION), 'harden: progress row node')
 
     ctx.slots.inject('conversation.chat.node', () => {
         ctx.slots.register(

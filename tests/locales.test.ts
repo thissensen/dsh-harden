@@ -47,7 +47,6 @@ describe('zh / en 两份字典', () => {
             'header.updateAvailable',
             'header.checkFailed',
             'progress.rowAria',
-            'panel.latestVersionMissing',
             'rule.ptcBreakLimit.title',
             'rule.ptcBreakLimit.desc',
             'rule.ptcBreakLimit.help',

@@ -14,7 +14,7 @@
 import { createElement } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import { IconShieldOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import { translateHostText } from '../locales'
+import { translateHostText, translateZh } from '../locales'
 import type { PlatformTranslate } from '../locales'
 
 /** 纠正消息的来源标记（host 侧 HardenNudgeMessageSource 的客户端镜像）。 */
@@ -35,6 +35,9 @@ export interface NudgeRowProps {
     node: NudgeRowNode
     t?: PlatformTranslate
 }
+
+/** 拿不到平台 `t` 时的中文兜底（模块级：每次渲染新建引用会让子组件白白重渲）。 */
+const FALLBACK_T: PlatformTranslate = translateZh()
 
 /** 行容器：与平台「思考中」「重试」同一种浅色小字行。 */
 const ROW: CSSProperties = {
@@ -68,17 +71,16 @@ const TEXT: CSSProperties = {
  * @param props - 平台注入的会话节点与翻译函数。
  */
 export function NudgeRow(props: NudgeRowProps): ReactElement {
-    const summary = props.node.data.source.summary
-    const aria = props.t === undefined ? summary : props.t('nudge.rowAria')
+    const t = props.t ?? FALLBACK_T
 
     // summary 是 host 传来的暗号（平台把 notice 的 summary 类型写死成 string，
     // 塞不了对象）；拆解与翻译在 locales.ts 里，与设置页的报错共用一份。
-    const shown = props.t === undefined ? summary : translateHostText(props.t, summary)
+    const summary = props.node.data.source.summary
 
     return createElement(
         'div',
-        { style: ROW, role: 'note', 'aria-label': aria },
+        { style: ROW, role: 'note', 'aria-label': t('nudge.rowAria') },
         createElement('span', { style: GLYPH }, createElement(IconShieldOutlineRegular, { size: 13 })),
-        createElement('span', { style: TEXT }, shown),
+        createElement('span', { style: TEXT }, translateHostText(t, summary)),
     )
 }

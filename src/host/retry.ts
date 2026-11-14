@@ -24,11 +24,14 @@ export interface RetryCoordinate {
     model: string
 }
 
-/** 一个 agent 在一条链上已经兜底重试了几次，以及本链的重试 id。 */
-export interface RetryBudget extends RetryCoordinate {
+/** 一条重试链的账：这条链已经写进日志几次，以及整条链共用的 retryId。 */
+export interface RetryBudget {
     count: number
     retryId: string
 }
+
+/** 每个 agent 一本账：键 = 链坐标串（见 `链坐标键`），值 = 该链的 `RetryBudget`。 */
+export type RetrySlotLedger = WeakMap<object, Map<string, RetryBudget>>
 
 /**
  * 写进 `llm/retry` 事件的数据（形状照官方 `dsh-llm-retry` 的 normal 分支）。
@@ -80,7 +83,7 @@ function fallbackPolicyKey(model: string): string {
  * 我们确实没有等待，填 0 最如实。
  *
  * @param payload - `agent/request-error` 载荷里本插件要用的字段。
- * @param retryId - 本 policy chain 的重试 id（同链复用，由 `takeRetrySlot` 分配）。
+ * @param retryId - 本 policy chain 的重试 id（同链复用，由 `peekRetrySlot` 分配）。
  * @param retry - 这是第几次兜底重试（从 1 起）。
  * @param maxRetries - 兜底次数上限（界面显示成 `{retry}/{maxRetries}`）。
  * @returns 两条事件的类型与数据。
@@ -133,41 +136,73 @@ export function matchesRetryTokens(failure: LlmFailureLike, tokens: string): boo
 }
 
 /**
- * 占一次兜底重试名额。
+ * 链坐标的账本键。
  *
- * 名额按链坐标（turn + step + provider + model）记账：同一坐标上每占一次加一，超出上限就拒绝；
- * 坐标任一项一变（新回合/新一步/换 provider/换模型）计数自动清零。**只增不删**——WeakMap 的 key 是
- * agent 对象本身，agent 回收时记录随之消失，不需要手工清理。
+ * 用 JSON 数组串而不是分隔符拼接：provider 与 model 都是自由文本，分隔符可能撞进内容里
+ * （与 `retry-chain-ledger.ts` 的 `构造重试链键` 同一手法；那边键里放事件的 policyKey，
+ * 这边放内存里的 model——平台的链键不含 model，靠 `fallbackPolicyKey` 表达）。
  *
- * **同链共用一个 retryId。** 平台校验要求同一 policy chain 内的 retry 事件复用同一个 retryId，新链的
- * retryId 必须全局未出现过。所以「链是否变化」的判据只在这里写一份：链内复用，换链重新生成。
+ * @param 坐标 - 本次重试的链坐标。
+ * @returns 该坐标在账本里的键。
+ */
+function 链坐标键(坐标: RetryCoordinate): string {
+    return JSON.stringify([坐标.turn, 坐标.step, 坐标.provider, 坐标.model])
+}
+
+/**
+ * 查一次兜底重试名额——**只算不记**；`llm/retry` 事件写成功之后才调 `commitRetrySlot` 落账。
+ *
+ * **键含回合与步号，所以不需要清表。** 平台校验器在整份日志里用 `(turn, step, provider, policyKey)`
+ * 找同一条链的最后一条（`findLast`），与本账本同构；回合号与步号只会往前走，旧坐标不可能复现。
+ * 平台自己的 `dsh-llm-retry` 要按 `step/start` 清空，是因为它的键里没有回合与步号。
+ *
+ * **同链共用一个 retryId、换链必换新 id。** 平台校验要求同一链内的 retry 事件复用同一个 retryId，
+ * 且新链的 retryId 不得与本会话任何已出现的链重复；「链是否变化」的判据只在这里写一份。
  * 注意平台的链键里没有 model，换模型要靠 `fallbackPolicyKey` 把 model 编进 policyKey 才成为新链。
  *
- * @param budgets - 每个 agent 的兜底重试记账。
+ * @param 账本组 - 每个 agent 的兜底重试账。
  * @param agent - agent 对象（WeakMap 的 key）。
  * @param 坐标 - 本次重试的链坐标。
  * @param limit - 用户配置的兜底次数上限。
- * @returns 还有名额时返回本链的 retryId 与这是第几次（从 1 起）；已用尽返回 null。
+ * @returns 还有名额时返回本链的 retryId 与这是第几次（从 1 起）；已用尽返回 null（此时什么都不记）。
  */
-export function takeRetrySlot(
-    budgets: WeakMap<object, RetryBudget>,
+export function peekRetrySlot(
+    账本组: RetrySlotLedger,
     agent: object,
     坐标: RetryCoordinate,
     limit: number,
-): { count: number; retryId: string } | null {
-    const previous = budgets.get(agent)
-    const 是否同链 = previous !== undefined &&
-        previous.turn === 坐标.turn &&
-        previous.step === 坐标.step &&
-        previous.provider === 坐标.provider &&
-        previous.model === 坐标.model
-    const count = 是否同链 ? previous.count + 1 : 1
-
+): RetryBudget | null {
+    const 上一条 = 账本组.get(agent)?.get(链坐标键(坐标))
+    const count = 上一条 === undefined ? 1 : 上一条.count + 1
     if (count > limit) return null
 
-    const retryId = 是否同链 ? previous.retryId : randomUUID()
-    budgets.set(agent, { ...坐标, count, retryId })
-    return { count, retryId }
+    return { count, retryId: 上一条?.retryId ?? randomUUID() }
+}
+
+/**
+ * 记一次名额：把 `peekRetrySlot` 查到的名额落账。
+ *
+ * **必须在 `llm/retry` 写成功之后调。** 账本只记「已经进日志的那一条」：先记会让写失败的那次
+ * 白白占掉一格，账本比日志多一格，之后同链写出的序号与日志对不上。
+ *
+ * @param 账本组 - 每个 agent 的兜底重试账。
+ * @param agent - agent 对象（WeakMap 的 key）。
+ * @param 坐标 - 本次重试的链坐标。
+ * @param 名额 - `peekRetrySlot` 给出的名额。
+ */
+export function commitRetrySlot(
+    账本组: RetrySlotLedger,
+    agent: object,
+    坐标: RetryCoordinate,
+    名额: RetryBudget,
+): void {
+    let 账本 = 账本组.get(agent)
+    if (账本 === undefined) {
+        账本 = new Map()
+        账本组.set(agent, 账本)
+    }
+
+    账本.set(链坐标键(坐标), 名额)
 }
 
 /** 把逗号分隔的清单切成去空白的条目组。 */

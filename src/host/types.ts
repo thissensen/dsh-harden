@@ -28,7 +28,10 @@ export type CompactionScope = 'all' | 'main' | 'subagent'
 export interface HardenConfig {
     /** 规则 H1：工具调用失败被吞。默认 true。 */
     toolFailureGuard?: boolean
-    /** 规则 H1：识别「工具失败提示」的行首前缀（一行一条，OR；空串 = 不拦）。 */
+    /**
+     * 规则 H1：识别「工具失败提示」的整段开头（一行一条，OR；前缀先 trim、区分大小写；空串 = 不拦）。
+     * `<` 开头的标记类前缀另可按行兜底（见 `guard.ts`）。
+     */
     toolFailurePrefixes?: string
     /** 规则 H2：回合无正文收尾。默认 true。 */
     emptyOutputGuard?: boolean
@@ -200,7 +203,7 @@ export interface SessionLike {
      * 读会话事件快照；`fromSeq` 是**含**起点的事件序号（平台语义，省略即从日志开头）。
      *
      * 平台已把它标 deprecated「新调用禁止」，本项目定稿不迁移、先记录（`.harness/05-坑册.md` 坑 26）：
-     * `plugin-record.ts` 按 `fromSeq` 增量续读记录，`step-reader.ts` 仍按无参全量读。
+     * `plugin-record.ts` 按 `fromSeq` 增量续读记录；`step-reader.ts` 已改走 `session/event` 观察者，不再调它。
      */
     snapshotEvents(fromSeq?: number): readonly SessionEventLike[]
     /** 追加一条会话事件（规则 H3 写重试事件用）。平台 `Session` 必供。 */

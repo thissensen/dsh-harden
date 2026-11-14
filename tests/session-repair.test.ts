@@ -4,7 +4,8 @@
  * 被测对象是 `src/host/session-repair.ts`：
  * - 纯函数 `normalizeRetryChain()`（重试链规范化：同链 retry 序号重排成 1..n + 同链共用
  *   一个 retryId + `normal` 模式的 maxRetries 抬到不小于本条序号）与
- *   `expandSourceEventSeqs()`（序号范围编码展开）——直接验证改动结果与「跨度过大就放弃」的结论；
+ *   `expandSourceEventSeqs()`（序号范围编码展开）——直接验证改动结果与「跨度过大 / 累计超预算就放弃」
+ *   的结论；
  * - 完整流程 `repairSessionFile()`——注入模拟平台校验器，用真实 zstd 文件验证
  *   「无需修复 / 已修复 / 修不了 / 读取失败」四态与落盘行为。
  *
@@ -13,6 +14,7 @@
  * @module dsh-harden/tests/session-repair
  */
 
+import { appendFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -22,16 +24,18 @@ import { expandSourceEventSeqs, loadPlatformValidator, normalizeRetryChain, repa
 import type { SessionValidator } from '../src/host/session-repair.js'
 
 /**
- * 写回桩：只把 `rename` 换成可控版本，其余 fs 能力（readFile/writeFile/rm/readdir）一律走真实现。
+ * 写回桩：把 `rename` 换成可控版本、把 `open` 包一层记下句柄方法的调用序，其余 fs 能力
+ * （readFile/writeFile/rm/readdir）一律走真实现。
  *
  * `vi.mock` 是文件级的——本文件所有用例都会拿到这个模块，故 `rename` 默认转调真实现，
- * 只有「写回失败」用例临时把 `重命名抛错` 打开。
+ * 只有「写回失败」用例临时把 `重命名抛错` 打开；`调用序组` 只由「写回顺序」用例重置并断言。
  */
-const 写回桩 = vi.hoisted(() => ({ 重命名抛错: false, 临时路径组: [] as string[] }))
+const 写回桩 = vi.hoisted(() => ({ 重命名抛错: false, 临时路径组: [] as string[], 调用序组: [] as string[] }))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
     const 原模块 = await importOriginal<typeof import('node:fs/promises')>()
     const 假重命名: typeof 原模块.rename = async (源路径, 目标路径) => {
+        写回桩.调用序组.push('rename')
         if (写回桩.重命名抛错 === false) {
             await 原模块.rename(源路径, 目标路径)
             return
@@ -41,7 +45,27 @@ vi.mock('node:fs/promises', async (importOriginal) => {
         throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' })
     }
 
-    return { ...原模块, rename: 假重命名 }
+    // 只包写回路径用到的三个句柄方法（writeFile/sync/close），其余能力不透传——本模块不用。
+    const 假打开: typeof 原模块.open = async (路径, 标志, 模式) => {
+        写回桩.调用序组.push('open')
+        const 句柄 = await 原模块.open(路径, 标志, 模式)
+        return {
+            writeFile: async (内容: Parameters<typeof 句柄.writeFile>[0]) => {
+                写回桩.调用序组.push('write')
+                await 句柄.writeFile(内容)
+            },
+            sync: async () => {
+                写回桩.调用序组.push('sync')
+                await 句柄.sync()
+            },
+            close: async () => {
+                写回桩.调用序组.push('close')
+                await 句柄.close()
+            },
+        } as unknown as Awaited<ReturnType<typeof 原模块.open>>
+    }
+
+    return { ...原模块, rename: 假重命名, open: 假打开 }
 })
 
 /** 与模块内一致的带 checksum 压缩选项（测试造文件用）。 */
@@ -77,29 +101,70 @@ function 带限额重试事件(retryId: string, retry: number, maxRetries: numbe
     }
 }
 
-/** 构造一条带 sourceEventSeqs 的事件。 */
+/**
+ * 构造一条带 sourceEventSeqs 的事件。
+ *
+ * 序号故意放在 `data` 下，用来覆盖展开器的递归查找；平台真实位置是事件顶层，见 `替换事件`。
+ */
 function 序号事件(序号组: unknown[]): unknown {
     return { type: 'assistant/message', data: { turn: 1, step: 1, sourceEventSeqs: 序号组 } }
 }
 
-/** 把事件组编码成多帧 zstd 会话文件字节。 */
-function 编码会话文件(行组: unknown[]): Buffer {
-    return zstdCompressSync(Buffer.from(`${行组.map((行) => JSON.stringify(行)).join('\n')}\n`, 'utf8'), CHECKSUM_OPTIONS)
+/** 构造一条替换型 surface 事件：平台把 sourceEventSeqs 写在事件顶层（v3-to-v4 校验器读的就是它）。 */
+function 替换事件(序号组: unknown[]): unknown {
+    return { type: 'user/message', seq: 21, surfaceOp: { op: 'replace', startSeq: 8, endSeq: 10 }, sourceEventSeqs: 序号组 }
 }
 
-/** 把会话文件字节解回行数组（本文件的用例都只写单帧，故可整体解压）。 */
-function 解码会话文件(内容: Buffer): unknown[] {
+/**
+ * 照平台 v3-to-v4 校验器的遮蔽规则建模：替换型事件的 sourceEventSeqs 必须逐条包含被遮蔽的序号。
+ *
+ * 同时把每次校验收到的 sourceEventSeqs 记进 `收到组`，用来断言「交给校验器之前已经展开」。
+ */
+function 遮蔽校验器(被遮蔽序号组: number[], 收到组: unknown[]): SessionValidator {
+    return {
+        validate: (_header, events) => {
+            for (const 事件 of events) {
+                const 记录 = 事件 as { sourceEventSeqs?: unknown }
+                if (Array.isArray(记录.sourceEventSeqs) === false) continue
+                收到组.push(记录.sourceEventSeqs)
+                if (被遮蔽序号组.some((序号) => (记录.sourceEventSeqs as unknown[]).includes(序号)) === false) {
+                    throw new Error('replacement sourceEventSeqs omit a shadowed surface node')
+                }
+            }
+        },
+    }
+}
+
+/** 把原始文本行组编码成单帧 zstd 会话文件字节。 */
+function 编码文本行组(行文本组: string[]): Buffer {
+    return zstdCompressSync(Buffer.from(`${行文本组.join('\n')}\n`, 'utf8'), CHECKSUM_OPTIONS)
+}
+
+/** 把会话文件字节解回原始文本行组（本文件的用例都只写单帧，故可整体解压）。 */
+function 解码文本行组(内容: Buffer): string[] {
     return zstdDecompressSync(内容)
         .toString('utf8')
         .split('\n')
         .filter((行) => 行 !== '')
-        .map((行) => JSON.parse(行))
+}
+
+/** 把事件组编码成单帧 zstd 会话文件字节。 */
+function 编码会话文件(行组: unknown[]): Buffer {
+    return 编码文本行组(行组.map((行) => JSON.stringify(行)))
+}
+
+/** 把会话文件字节解回行数组（本文件的用例都只写单帧，故可整体解压）。 */
+function 解码会话文件(内容: Buffer): unknown[] {
+    return 解码文本行组(内容).map((行) => JSON.parse(行))
 }
 
 /**
  * 模拟平台校验器：同链 retryId 不一致、同链 retry 序号不连续、llm/retry-started 配不上既存的
  * llm/retry（或坐标不符、重复配对）、`normal` 模式的 maxRetries 缺失或不够用（`always` 模式
- * 反而带了它）、sourceEventSeqs 含子数组——五条规则都拒。
+ * 反而带了它）——四条规则都拒。
+ *
+ * sourceEventSeqs 的范围编码不在其中：那是平台自己的合法存储形态（读路径先 decode 再交给校验器），
+ * 修复器在首检不过时补上这一步再判，所以假校验器不该再把它判成损坏。
  *
  * 规则形状逐条对照平台源码（`dsh-session-persistence-jsonl` 的 `assertReleasedPayloadSemantics()`
  * 的 llm/retry 分支与 `Relationships.retry()`）：假校验器不认真机写出的形态时，会出现「测试全绿
@@ -147,15 +212,6 @@ function 模拟平台校验(header: unknown, events: unknown[]): void {
             throw new Error('llm/retry always mode must omit maxRetries')
         }
     }
-
-    for (const 事件 of events) {
-        const data = (事件 as { data?: Record<string, unknown> }).data ?? {}
-        const 序号组 = data.sourceEventSeqs
-        if (Array.isArray(序号组) === false) continue
-        for (const 项 of 序号组) {
-            if (Array.isArray(项)) throw new Error('sourceEventSeqs 含范围编码')
-        }
-    }
 }
 
 /** 注入用的校验器包装。 */
@@ -172,7 +228,7 @@ describe('normalizeRetryChain（重试链规范化）', () => {
             重试启动事件(1, 1, 'id-2', 2),
         ]
 
-        expect(normalizeRetryChain(事件组)).toBe(true)
+        expect(normalizeRetryChain(事件组)).toEqual([2, 3])
         const 编号组 = 事件组.map((事件) => (事件 as { data: { retryId: string } }).data.retryId)
         expect(编号组).toEqual(['id-1', 'id-1', 'id-1', 'id-1'])
     })
@@ -187,7 +243,7 @@ describe('normalizeRetryChain（重试链规范化）', () => {
     it('已一致时不改动', () => {
         const 事件组 = [重试事件(1, 1, 'p', 'k', 'id-1', 1), 重试启动事件(1, 1, 'id-1', 1)]
 
-        expect(normalizeRetryChain(事件组)).toBe(false)
+        expect(normalizeRetryChain(事件组)).toEqual([])
     })
 
     it('不同链互不影响', () => {
@@ -205,7 +261,7 @@ describe('normalizeRetryChain（重试链规范化）', () => {
     it('缺字段的事件被跳过、不报错', () => {
         const 事件组 = [{ type: 'llm/retry', data: { turn: 1 } }, { type: 'tool/call', data: {} }]
 
-        expect(normalizeRetryChain(事件组)).toBe(false)
+        expect(normalizeRetryChain(事件组)).toEqual([])
     })
 
     it('同链序号重复（1,1）被重排成 1,2 且 id 归并', () => {
@@ -216,7 +272,7 @@ describe('normalizeRetryChain（重试链规范化）', () => {
             重试启动事件(1, 1, 'id-2', 1),
         ]
 
-        expect(normalizeRetryChain(事件组)).toBe(true)
+        expect(normalizeRetryChain(事件组)).toEqual([2, 3])
         const 编号组 = 事件组.map((事件) => (事件 as { data: { retryId: string } }).data.retryId)
         expect(编号组).toEqual(['id-1', 'id-1', 'id-1', 'id-1'])
         const 序号组 = 事件组.map((事件) => (事件 as { data: { retry: number } }).data.retry)
@@ -226,7 +282,7 @@ describe('normalizeRetryChain（重试链规范化）', () => {
     it('链内跳号（1,3）重排成 1,2', () => {
         const 事件组 = [重试事件(2, 1, 'p', 'k', 'id-a', 1), 重试事件(2, 1, 'p', 'k', 'id-a', 3)]
 
-        expect(normalizeRetryChain(事件组)).toBe(true)
+        expect(normalizeRetryChain(事件组)).toEqual([1])
         expect((事件组[1] as { data: { retry: number } }).data.retry).toBe(2)
         expect((事件组[1] as { data: { retryId: string } }).data.retryId).toBe('id-a')
     })
@@ -234,7 +290,7 @@ describe('normalizeRetryChain（重试链规范化）', () => {
     it('retry 字段类型不对时跳过、不改写', () => {
         const 事件组 = [{ type: 'llm/retry', data: { turn: 1, step: 1, provider: 'p', policyKey: 'k', retryId: 'id-x' } }]
 
-        expect(normalizeRetryChain(事件组)).toBe(false)
+        expect(normalizeRetryChain(事件组)).toEqual([])
     })
 
     it('真机形状的 retry-started 被同步改写', () => {
@@ -245,7 +301,7 @@ describe('normalizeRetryChain（重试链规范化）', () => {
             重试启动事件(1, 1, 'id-2', 1),
         ]
 
-        expect(normalizeRetryChain(事件组)).toBe(true)
+        expect(normalizeRetryChain(事件组)).toEqual([2, 3])
         const 第二条 = (事件组[1] as { data: { retry: number; retryId: string } }).data
         expect(第二条.retry).toBe(1)
         expect(第二条.retryId).toBe('id-1')
@@ -309,6 +365,17 @@ describe('expandSourceEventSeqs（序号范围编码展开）', () => {
         expect(序号组[0]).toBe(0)
         expect(序号组[99999]).toBe(99999)
     })
+
+    it('多条范围累计超过 100000：拒绝展开、带放弃原因', () => {
+        const 事件组 = [序号事件([[0, 59999]]), 序号事件([[0, 59999]])]
+
+        const 结果 = expandSourceEventSeqs(事件组)
+
+        expect(结果.有改动).toBe(false)
+        expect(结果.放弃原因).not.toBeNull()
+        expect(结果.放弃原因 ?? '').toContain('累计跨度')
+        expect((事件组[1] as { data: { sourceEventSeqs: unknown[] } }).data.sourceEventSeqs).toEqual([[0, 59999]])
+    })
 })
 
 describe('repairSessionFile（完整流程与状态表达）', () => {
@@ -321,6 +388,27 @@ describe('repairSessionFile（完整流程与状态表达）', () => {
             const 结果 = await repairSessionFile(文件, 用假校验器())
             expect(结果.status).toBe('intact')
             expect(结果.changedCategories).toEqual([])
+        } finally {
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
+    it('平台合法的序号范围编码（事件顶层 [[8,10],16]）⇒ 交校验器前已展开、无需修复、磁盘字节不变', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            const 原字节 = 编码会话文件([{ type: 'session', id: 's1' }, 替换事件([[8, 10], 16])])
+            await writeFile(文件, 原字节)
+            const 收到组: unknown[] = []
+
+            const 结果 = await repairSessionFile(文件, 遮蔽校验器([8, 9, 10], 收到组))
+
+            expect(结果.status).toBe('intact')
+            expect(结果.changedCategories).toEqual([])
+            // 首检照原始行判不过，展开后再判一次：第二次交给校验器的已是扁平整数。
+            expect(收到组.length).toBe(2)
+            expect(收到组[1]).toEqual([8, 9, 10, 16])
+            expect((await readFile(文件)).equals(原字节)).toBe(true)
         } finally {
             await rm(目录, { recursive: true, force: true })
         }
@@ -344,15 +432,18 @@ describe('repairSessionFile（完整流程与状态表达）', () => {
         }
     })
 
-    it('序号范围编码被修好、落盘、报「已修复」', async () => {
+    it('合法序号范围编码报「无需修复」、磁盘字节不变', async () => {
         const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
         try {
             const 文件 = join(目录, 'session.v4.jsonl.zstd')
-            await writeFile(文件, 编码会话文件([{ type: 'session', id: 's1' }, 序号事件([[8, 10]])]))
+            const 原字节 = 编码会话文件([{ type: 'session', id: 's1' }, 序号事件([[8, 10]])])
+            await writeFile(文件, 原字节)
 
             const 结果 = await repairSessionFile(文件, 用假校验器())
-            expect(结果.status).toBe('repaired')
-            expect(结果.changedCategories).toContain('sourceEventSeqs-expanded')
+
+            expect(结果.status).toBe('intact')
+            expect(结果.changedCategories).toEqual([])
+            expect((await readFile(文件)).equals(原字节)).toBe(true)
         } finally {
             await rm(目录, { recursive: true, force: true })
         }
@@ -432,7 +523,11 @@ describe('repairSessionFile（完整流程与状态表达）', () => {
         const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
         try {
             const 文件 = join(目录, 'session.v4.jsonl.zstd')
-            const 原字节 = 编码会话文件([{ type: 'session', id: 's1' }, 序号事件([[8, 10]])])
+            const 原字节 = 编码会话文件([
+                { type: 'session', id: 's1' },
+                重试事件(1, 1, 'p', 'k', 'id-1', 1),
+                重试事件(1, 1, 'p', 'k', 'id-2', 2),
+            ])
             await writeFile(文件, 原字节)
 
             写回桩.临时路径组.length = 0
@@ -458,14 +553,104 @@ describe('repairSessionFile（完整流程与状态表达）', () => {
         }
     })
 
+    it('写回前会话文件被平台追加：报 read-failed、不落盘、不留临时文件', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            const 原字节 = 编码会话文件([
+                { type: 'session', id: 's1' },
+                重试事件(1, 1, 'p', 'k', 'id-1', 1),
+                重试事件(1, 1, 'p', 'k', 'id-2', 2),
+            ])
+            await writeFile(文件, 原字节)
+
+            // 校验器的 validate 是同步签名，这里用 node:fs 的同步追加做真实 I/O（不是 mock）。
+            const 追加字节 = Buffer.from('x')
+            let 已追加 = false
+            const 追写校验器: SessionValidator = {
+                validate: (header, events) => {
+                    if (已追加 === false) {
+                        已追加 = true
+                        appendFileSync(文件, 追加字节)
+                    }
+
+                    模拟平台校验(header, events)
+                },
+            }
+
+            const 结果 = await repairSessionFile(文件, 追写校验器)
+
+            expect(结果.status).toBe('read-failed')
+            expect(结果.reason).toContain('改写')
+            expect((await readdir(目录)).sort()).toEqual(['session.v4.jsonl.zstd'])
+            expect((await readFile(文件)).subarray(-1).equals(追加字节)).toBe(true)
+        } finally {
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
+    it('未改动的行原样写回（超出安全整数的字面量不被重新序列化）', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            const 原始header = '{"type":"session","id":"s1","createdAt":17000000000000000000000}'
+            await writeFile(文件, 编码文本行组([
+                原始header,
+                JSON.stringify(重试事件(1, 1, 'p', 'k', 'id-1', 1)),
+                JSON.stringify(重试事件(1, 1, 'p', 'k', 'id-2', 2)),
+            ]))
+
+            const 结果 = await repairSessionFile(文件, 用假校验器())
+
+            expect(结果.status).toBe('repaired')
+            const 写回行组 = 解码文本行组(await readFile(文件))
+            expect(写回行组.length).toBe(3)
+            // JSON 往返会把 1.7E22 写成 1.7e+22：未改动的行必须逐字节保留原文。
+            expect(写回行组[0]).toBe(原始header)
+            // 改动行确实被重写并生效，不是空转。
+            expect((JSON.parse(写回行组[2]) as { data: { retryId: string } }).data.retryId).toBe('id-1')
+        } finally {
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
+    it('写回按 open → write → sync → close → rename 顺序落盘', async () => {
+        const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
+        try {
+            const 文件 = join(目录, 'session.v4.jsonl.zstd')
+            await writeFile(文件, 编码会话文件([
+                { type: 'session', id: 's1' },
+                重试事件(1, 1, 'p', 'k', 'id-1', 1),
+                重试事件(1, 1, 'p', 'k', 'id-2', 2),
+            ]))
+
+            写回桩.调用序组.length = 0
+            const 结果 = await repairSessionFile(文件, 用假校验器())
+
+            expect(结果.status).toBe('repaired')
+            expect(写回桩.调用序组.slice(0, 4)).toEqual(['open', 'write', 'sync', 'close'])
+            expect(写回桩.调用序组.indexOf('sync')).toBeLessThan(写回桩.调用序组.indexOf('rename'))
+
+            // 真写：落盘内容是修好的那两行事件。
+            const 落盘行组 = 解码文本行组(await readFile(文件))
+            expect(落盘行组.length).toBe(3)
+            expect((JSON.parse(落盘行组[2]) as { data: { retryId: string } }).data.retryId).toBe('id-1')
+        } finally {
+            写回桩.调用序组.length = 0
+            await rm(目录, { recursive: true, force: true })
+        }
+    })
+
     it('超大序号范围：unrepairable、reason 以「修不了：」开头且含跨度过大、磁盘字节没变', async () => {
         const 目录 = await mkdtemp(join(tmpdir(), 'harden-repair-'))
         try {
             const 文件 = join(目录, 'session.v4.jsonl.zstd')
             const 原字节 = 编码会话文件([{ type: 'session', id: 's1' }, 序号事件([[0, 200000000]])])
             await writeFile(文件, 原字节)
+            // 首检必须先不过才会走到展开那一步：本用例测的是展开预算，不是校验器规则，故用一律拒绝的桩。
+            const 拒绝校验器: SessionValidator = { validate: () => { throw new Error('永远不过') } }
 
-            const 结果 = await repairSessionFile(文件, 用假校验器())
+            const 结果 = await repairSessionFile(文件, 拒绝校验器)
 
             expect(结果.status).toBe('unrepairable')
             expect(结果.reason.startsWith('修不了：')).toBe(true)

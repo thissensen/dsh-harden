@@ -482,12 +482,12 @@ describe('端点校验与共享口径同一份', () => {
 })
 
 describe('未知动作与暗号转义', () => {
-    it('GET /api/dsh-harden/nope ⇒ 404 api.unknownAction|GET /api/dsh-harden/nope', async () => {
+    it('GET /api/dsh-harden/nope ⇒ 404 api.unknownAction|GET|/api/dsh-harden/nope', async () => {
         const handler = 挂载端点(造依赖())
         const 响应 = await 调端点(handler, 造请求桩('GET', '/api/dsh-harden/nope'))
 
         expect(响应.statusCode).toBe(404)
-        expect(JSON.parse(响应.body)).toEqual({ ok: false, error: 'api.unknownAction|GET /api/dsh-harden/nope' })
+        expect(JSON.parse(响应.body)).toEqual({ ok: false, error: 'api.unknownAction|GET|/api/dsh-harden/nope' })
     })
 
     it('路径里带竖线 ⇒ 转义成斜杠，暗号字段切不错位', async () => {
@@ -495,7 +495,7 @@ describe('未知动作与暗号转义', () => {
         const 响应 = await 调端点(handler, 造请求桩('GET', '/api/dsh-harden/no|pe'))
 
         expect(响应.statusCode).toBe(404)
-        expect(JSON.parse(响应.body)).toEqual({ ok: false, error: 'api.unknownAction|GET /api/dsh-harden/no/pe' })
+        expect(JSON.parse(响应.body)).toEqual({ ok: false, error: 'api.unknownAction|GET|/api/dsh-harden/no/pe' })
     })
 })
 

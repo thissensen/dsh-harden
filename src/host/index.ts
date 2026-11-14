@@ -24,7 +24,6 @@
 import { createRequire } from 'node:module'
 import type {
     Ctx,
-    LlmFailureLike,
     Logger,
     RequestErrorAction,
     RequestErrorPayload,
@@ -40,7 +39,14 @@ import {
     parseToolFailurePrefixes,
 } from './guard.js'
 import { mountTurnSnapshotMemory, readTurnSnapshot, type TurnSnapshot } from './step-reader.js'
-import { buildRetryEvents, matchesRetryTokens, takeRetrySlot, type RetryBudget, type RetryCoordinate } from './retry.js'
+import {
+    buildRetryEvents,
+    commitRetrySlot,
+    matchesRetryTokens,
+    peekRetrySlot,
+    type RetryCoordinate,
+    type RetrySlotLedger,
+} from './retry.js'
 import { mountApi, readSessionQuery, readTrustedHosts } from './api.js'
 import type { ConfigScope } from './api.js'
 import { mountJobBackground } from './job-background.js'
@@ -70,8 +76,8 @@ interface NudgeBudget {
 interface HardenState {
     /** 每个 agent 的注入计数；key 是 agent 对象本身（WeakMap 让回收自动发生）。 */
     budgets: WeakMap<object, NudgeBudget>
-    /** 每个 agent 的兜底重试记账（规则 H3）。 */
-    retryBudgets: WeakMap<object, RetryBudget>
+    /** 每个 agent 的兜底重试账（规则 H3）：键是链坐标串，值是该链已写进日志的次数与 retryId。 */
+    retryBudgets: RetrySlotLedger
 }
 
 /**
@@ -301,7 +307,7 @@ function mountRequestErrorGuard(
 }
 
 /**
- * 判定 + 兜底重试。判定在 `retry.ts`，这里只做收窄载荷、读配置、记账。
+ * 判定 + 兜底重试。判定在 `retry.ts`，这里只做收窄载荷、读配置、写事件与记账。
  *
  * @param payloadRaw - `agent/request-error` 的载荷（形状由平台保证，这里按需收窄）。
  * @param officialDecision - 更内层监听器（官方 retry）的决定。
@@ -337,54 +343,22 @@ function considerRetry(
         provider: payload.provider,
         model,
     }
-    const slot = takeRetrySlot(state.retryBudgets, agent, 坐标, config.networkRetryCount)
-    if (slot === null) return officialDecision
+    const 名额 = peekRetrySlot(state.retryBudgets, agent, 坐标, config.networkRetryCount)
+    if (名额 === null) return officialDecision
 
     logger.info?.(
         `[harden] 规则 H3 命中：turn=${payload.turn} step=${payload.step} provider=${payload.provider} ` +
-            `model=${model} code=${payload.failure?.code ?? '-'}，兜底重试（第 ${slot.count} 次）`,
+            `model=${model} code=${payload.failure?.code ?? '-'}，兜底重试（第 ${名额.count} 次）`,
     )
 
-    reportRetryToSession(
-        payload,
-        slot.retryId,
-        slot.count,
-        config.networkRetryCount,
-        model,
-    )
+    const 事件组 = buildRetryEvents({ ...坐标, failure: payload.failure }, 名额.retryId, 名额.count, config.networkRetryCount)
+    payload.agent.session.append(事件组.scheduledType, 事件组.scheduledData)
+    // 名额只记「已经进日志的那一条」：先记会让写失败时账本比日志多一格，序号与日志对不上。
+    commitRetrySlot(state.retryBudgets, agent, 坐标, 名额)
+    // 第二条只为把界面状态改成「已重试」；它抛错时不回退名额——链已按上面那条成立。
+    payload.agent.session.append(事件组.startedType, 事件组.startedData)
 
     return { kind: 'retry' }
-}
-
-/**
- * 往会话写一对重试事件，让界面显示「已重试模型请求（n/max）· 1s」。
- *
- * 事件形状与官方 `dsh-llm-retry` 一致（界面认的就是这两条）。这条写入只为界面提示，
- * 不参与重试判定。
- *
- * @param payload - `agent/request-error` 载荷。
- * @param retryId - 本 policy chain 的重试 id（由 `takeRetrySlot` 分配，同链复用）。
- * @param retry - 这是第几次兜底重试（从 1 起）。
- * @param maxRetries - 兜底次数上限。
- * @param model - 本次重试用的模型名（编进 policyKey，换模型才是新链）。
- */
-function reportRetryToSession(
-    payload: RequestErrorPayload,
-    retryId: string,
-    retry: number,
-    maxRetries: number,
-    model: string,
-): void {
-    const 事件载荷: RetryCoordinate & { failure: LlmFailureLike } = {
-        turn: payload.turn,
-        step: payload.step,
-        provider: payload.provider,
-        model,
-        failure: payload.failure,
-    }
-    const events = buildRetryEvents(事件载荷, retryId, retry, maxRetries)
-    payload.agent.session.append(events.scheduledType, events.scheduledData)
-    payload.agent.session.append(events.startedType, events.startedData)
 }
 
 /**
